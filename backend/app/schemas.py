@@ -4,7 +4,7 @@ Naming convention: {Entity}Create (request body for POST), {Entity}Update
 (PATCH body, all fields optional), {Entity}Out (response shape).
 """
 from datetime import datetime
-from typing import Optional, Literal
+from typing import Optional, Literal, Any
 from pydantic import BaseModel, EmailStr, Field, field_validator, ConfigDict
 import re
 
@@ -17,7 +17,8 @@ class PageParams(BaseModel):
 
 
 class PageEnvelope(BaseModel):
-    """Every list endpoint returns this exact shape — one reusable frontend table component."""
+    """Every list endpoint returns this exact shape."""
+    model_config = ConfigDict(arbitrary_types_allowed=True)
     items: list
     total: int
     page: int
@@ -56,6 +57,10 @@ class UserOut(BaseModel):
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
+
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
 
 
 class TokenResponse(BaseModel):

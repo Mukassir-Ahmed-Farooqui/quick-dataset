@@ -47,7 +47,7 @@ class DocumentRepository:
         self.db.refresh(doc)
         return doc
 
-    def get_documents(self, project_id: str, skip: int = 0, limit: int = 20) -> list[Document]:
+    def get_documents(self, project_id: str, skip: int = 0, limit: int = 20) -> list:
         return (
             self.db.query(Document)
             .filter(Document.project_id == project_id, Document.deleted_at.is_(None))

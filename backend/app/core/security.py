@@ -28,3 +28,12 @@ def create_refresh_token(data: dict) -> str:
     to_encode.update({"exp": expire, "type": "refresh"})
     encoded_jwt = jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
     return encoded_jwt
+
+
+def decode_refresh_token(token: str) -> dict:
+    payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+    if payload.get("type") != "refresh":
+        raise JWTError("Not a refresh token")
+    if payload.get("sub") is None:
+        raise JWTError("Missing sub claim")
+    return payload

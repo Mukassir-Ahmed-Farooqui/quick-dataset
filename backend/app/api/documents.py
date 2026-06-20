@@ -9,6 +9,7 @@ from app.models import User, ProcessingStatus
 from app.repositories.document_repository import DocumentRepository
 from app.services.parsing import parse_document
 from app.schemas_extended import DocumentOut
+from app.schemas import PageEnvelope
 
 router = APIRouter(prefix="/projects/{project_id}/documents", tags=["documents"])
 
@@ -77,22 +78,37 @@ async def upload_documents(
         with open(file_path, "wb") as f:
             f.write(file_bytes)
 
+        # Create a Task row for tracking
+        from app.repositories.task_repository import TaskRepository
+        task_repo = TaskRepository(db)
+        task = task_repo.create_task(
+            project_id=project_id,
+            task_type="text-processing",
+            total_count=1,
+        )
+        task_repo.start_task(str(task.id))
+
         background_tasks.add_task(_parse_in_background, str(doc.id), file_path, ext, file.filename)
         results.append(doc)
 
     return results
 
 
-@router.get("", response_model=List[DocumentOut])
+@router.get("")
 def list_documents(
     project_id: str,
-    skip: int = 0,
-    limit: int = 50,
+    page: int = 1,
+    page_size: int = 20,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     repo = DocumentRepository(db)
-    return repo.get_documents(project_id, skip=skip, limit=limit)
+    rows = repo.get_documents(project_id, skip=0, limit=10000)
+    total = len(rows)
+    start = (page - 1) * page_size
+    paged = rows[start:start + page_size]
+    items = [DocumentOut.model_validate(d) for d in paged]
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
 @router.get("/{document_id}", response_model=DocumentOut)

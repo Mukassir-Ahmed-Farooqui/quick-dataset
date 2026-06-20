@@ -8,16 +8,17 @@ from app.models import User
 from app.repositories.chunk_repository import ChunkRepository
 from app.repositories.document_repository import DocumentRepository
 from app.services.chunking import chunk_document, preview_chunks
-from app.schemas import TaskAcceptedResponse
+from app.schemas import TaskAcceptedResponse, PageEnvelope
 from app.schemas_extended import ChunkGenerateRequest, ChunkPreviewRequest, ChunkPreviewOut, ChunkOut, ChunkUpdate
 
 router = APIRouter(prefix="/projects/{project_id}/chunks", tags=["chunks"])
 STORAGE_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "storage")
 
 
-def _generate_in_background(project_id: str, document_ids: list[str], strategy: str, chunk_size: int, chunk_overlap: int):
+def _generate_in_background(project_id: str, document_ids: list[str], strategy: str, chunk_size: int, chunk_overlap: int, task_id: str | None = None):
     from app.core.database import SessionLocal
     db = SessionLocal()
+    total_created = 0
     try:
         repo = ChunkRepository(db)
         doc_repo = DocumentRepository(db)
@@ -55,7 +56,13 @@ def _generate_in_background(project_id: str, document_ids: list[str], strategy: 
                 ))
 
             repo.bulk_create(chunk_objs)
+            total_created += len(chunk_objs)
+
     finally:
+        if task_id:
+            from app.repositories.task_repository import TaskRepository
+            tr = TaskRepository(db)
+            tr.complete_task(task_id, completed_count=total_created)
         db.close()
 
 
@@ -107,26 +114,41 @@ def generate_chunks(
     for doc_id in data.document_ids:
         chunk_repo.soft_delete_by_document(project_id, doc_id)
 
-    import uuid
-    task_id = str(uuid.uuid4())
+    # Create a Task row so callers can poll status
+    from app.repositories.task_repository import TaskRepository
+    task_repo = TaskRepository(db)
+    task = task_repo.create_task(
+        project_id=project_id,
+        task_type="text-processing",
+        total_count=len(data.document_ids),
+    )
+    task_repo.start_task(str(task.id))
+    task_id = str(task.id)
+
     background_tasks.add_task(
         _generate_in_background,
         project_id, data.document_ids, data.strategy, data.chunk_size, data.chunk_overlap,
+        task_id,
     )
     return TaskAcceptedResponse(task_id=task_id, generation_run_id=task_id)
 
 
-@router.get("", response_model=list[ChunkOut])
+@router.get("")
 def list_chunks(
     project_id: str,
     document_id: str | None = None,
-    skip: int = 0,
-    limit: int = 100,
+    page: int = 1,
+    page_size: int = 20,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     repo = ChunkRepository(db)
-    return repo.get_chunks(project_id, document_id=document_id, skip=skip, limit=limit)
+    rows = repo.get_chunks(project_id, document_id=document_id, skip=0, limit=100000)
+    total = len(rows)
+    start = (page - 1) * page_size
+    paged = rows[start:start + page_size]
+    items = [ChunkOut.model_validate(c) for c in paged]
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
 @router.get("/{chunk_id}", response_model=ChunkOut)
