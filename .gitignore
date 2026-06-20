@@ -1,0 +1,28 @@
+# Environment
+.env
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+venv/
+*.db
+
+# IDE / AI tools
+.vscode/
+.idea/
+.codebuddy/
+.commandcode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Runtime storage (uploaded files, parsed output)
+backend/storage/
+backend/*.db
+
+# Generated docs (not the source .md files at root)
+docs/
