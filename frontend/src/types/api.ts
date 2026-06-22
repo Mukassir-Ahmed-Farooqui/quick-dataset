@@ -1,8 +1,15 @@
-export interface PageEnvelope<T> {
-  items: T[]
-  total: number
+export interface PaginationMeta {
   page: number
   page_size: number
+  total_items: number
+  total_pages: number
+  has_next: boolean
+  has_previous: boolean
+}
+
+export interface PageEnvelope<T> {
+  items: T[]
+  pagination: PaginationMeta
 }
 
 export interface ErrorResponse {
@@ -10,7 +17,7 @@ export interface ErrorResponse {
   code: string
 }
 
-export interface UserOut {
+export interface User {
   id: string
   username: string
   email: string
@@ -18,22 +25,41 @@ export interface UserOut {
   created_at: string
 }
 
-export interface LoginRequest {
+export interface TokenResponse {
+  access_token: string
+  refresh_token: string
+  token_type: string
+  user: User
+}
+
+export interface LoginPayload {
   email: string
   password: string
 }
 
-export interface RegisterRequest {
+export interface RegisterPayload {
   username: string
   email: string
   password: string
 }
 
-export interface TokenResponse {
-  access_token: string
-  refresh_token: string
-  token_type: 'bearer'
-  user: UserOut
+export interface ProjectCreate {
+  name: string
+  description?: string
+  default_llm_key_id?: string
+}
+
+export interface ProjectUpdate {
+  name?: string
+  description?: string
+  default_llm_key_id?: string
+}
+
+export interface LLMKeyCreate {
+  provider: LLMProvider
+  name: string
+  api_key: string
+  is_default?: boolean
 }
 
 export type LLMProvider = 'openrouter' | 'openai' | 'groq' | 'gemini'
@@ -47,6 +73,46 @@ export interface LLMKeyOut {
   is_valid: boolean | null
   last_validated_at: string | null
   created_at: string
+}
+
+export interface GAPairOut {
+  id: string
+  document_id: string
+  genre_title: string
+  genre_description: string | null
+  audience_title: string
+  audience_description: string | null
+  created_at: string
+}
+
+export interface GAPairCreate {
+  document_id: string
+  genre_title: string
+  genre_description?: string
+  audience_title: string
+  audience_description?: string
+}
+
+export interface GAPairUpdate {
+  genre_title?: string
+  genre_description?: string
+  audience_title?: string
+  audience_description?: string
+}
+
+export interface GAGeneratePayload {
+  document_ids: string[]
+  pairs_per_document: number
+  model?: string
+  llm_key_id?: string
+}
+
+export interface GenerationEstimateResponse {
+  estimated_item_count: number
+  estimated_input_tokens: number
+  estimated_output_tokens: number
+  estimated_cost_usd: number
+  warning: string | null
 }
 
 export interface LLMKeyTestResult {

@@ -9,7 +9,7 @@ from app.models import User, ProcessingStatus
 from app.repositories.document_repository import DocumentRepository
 from app.services.parsing import parse_document
 from app.schemas_extended import DocumentOut
-from app.schemas import PageEnvelope
+from app.schemas import PaginatedResponse, pagination_meta
 
 router = APIRouter(prefix="/projects/{project_id}/documents", tags=["documents"])
 
@@ -24,7 +24,7 @@ def _file_type(filename: str) -> str:
     return ext
 
 
-async def _parse_in_background(document_id: str, file_path: str, file_type: str, filename: str):
+async def _parse_in_background(document_id: str, file_path: str, file_type: str, filename: str, task_id: str | None = None):
     from app.core.database import SessionLocal
     db = SessionLocal()
     try:
@@ -36,9 +36,17 @@ async def _parse_in_background(document_id: str, file_path: str, file_type: str,
         with open(parsed_path, "w", encoding="utf-8") as f:
             f.write(content)
         repo.update_status(document_id, ProcessingStatus.parsed)
+        if task_id:
+            from app.repositories.task_repository import TaskRepository
+            tr = TaskRepository(db)
+            tr.complete_task(task_id, completed_count=1)
     except Exception as e:
         repo = DocumentRepository(db)
         repo.update_status(document_id, ProcessingStatus.failed, str(e))
+        if task_id:
+            from app.repositories.task_repository import TaskRepository
+            tr = TaskRepository(db)
+            tr.fail_task(task_id, str(e))
     finally:
         db.close()
 
@@ -88,7 +96,7 @@ async def upload_documents(
         )
         task_repo.start_task(str(task.id))
 
-        background_tasks.add_task(_parse_in_background, str(doc.id), file_path, ext, file.filename)
+        background_tasks.add_task(_parse_in_background, str(doc.id), file_path, ext, file.filename, str(task.id))
         results.append(doc)
 
     return results
@@ -98,17 +106,15 @@ async def upload_documents(
 def list_documents(
     project_id: str,
     page: int = 1,
-    page_size: int = 20,
+    page_size: int = 50,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     repo = DocumentRepository(db)
-    rows = repo.get_documents(project_id, skip=0, limit=10000)
-    total = len(rows)
-    start = (page - 1) * page_size
-    paged = rows[start:start + page_size]
-    items = [DocumentOut.model_validate(d) for d in paged]
-    return {"items": items, "total": total, "page": page, "page_size": page_size}
+    rows = repo.list_documents(project_id, skip=(page - 1) * page_size, limit=page_size)
+    total = repo.count_documents(project_id)
+    items = [DocumentOut.model_validate(d) for d in rows]
+    return PaginatedResponse(items=items, pagination=pagination_meta(page, page_size, total))
 
 
 @router.get("/{document_id}", response_model=DocumentOut)

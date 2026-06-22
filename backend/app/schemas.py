@@ -11,18 +11,47 @@ import re
 
 # ── Shared ───────────────────────────────────────────────────────────
 
-class PageParams(BaseModel):
+import math
+
+
+class PaginationParams(BaseModel):
+    """Query params for every list endpoint. Same schema everywhere."""
     page: int = Field(default=1, ge=1)
-    page_size: int = Field(default=20, ge=1, le=100)
+    page_size: int = Field(default=50, ge=1, le=100)
 
 
-class PageEnvelope(BaseModel):
-    """Every list endpoint returns this exact shape."""
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-    items: list
-    total: int
+class PaginationMeta(BaseModel):
+    """Nested pagination metadata — returned inside every paginated response."""
     page: int
     page_size: int
+    total_items: int
+    total_pages: int
+    has_next: bool
+    has_previous: bool
+
+
+class PaginatedResponse(BaseModel):
+    """Every list endpoint returns exactly this shape.
+    items is a bare list so Pydantic doesn't coerce to a typed-list (which
+    would break model_validate on route returns). Callers validate contents
+    at the next level down."""
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    items: list
+    pagination: PaginationMeta
+
+
+def pagination_meta(page: int, page_size: int, total_items: int) -> PaginationMeta:
+    """Helper to build PaginationMeta from raw values — avoids duplicating
+    the math.totients formula in every route."""
+    total_pages = max(1, math.ceil(total_items / page_size)) if total_items else 1
+    return PaginationMeta(
+        page=page,
+        page_size=page_size,
+        total_items=total_items,
+        total_pages=total_pages,
+        has_next=page < total_pages,
+        has_previous=page > 1,
+    )
 
 
 class ErrorResponse(BaseModel):

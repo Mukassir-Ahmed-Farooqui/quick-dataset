@@ -1,20 +1,16 @@
 import { apiClient } from './client'
-import type { LoginRequest, RegisterRequest, TokenResponse, UserOut } from '@/types/api'
+import type { TokenResponse, LoginPayload, RegisterPayload, User } from '@/types/api'
 
 export const authApi = {
-  login(data: LoginRequest): Promise<TokenResponse> {
-    return apiClient.post('/auth/login', data).then((r) => r.data)
-  },
+  register: (payload: RegisterPayload) =>
+    apiClient.post<User>('/auth/register', payload).then(r => r.data),
 
-  register(data: RegisterRequest): Promise<UserOut> {
-    return apiClient.post('/auth/register', data).then((r) => r.data)
-  },
+  login: (payload: LoginPayload) =>
+    apiClient.post<TokenResponse>('/auth/login', payload).then(r => r.data),
 
-  refresh(refreshToken: string): Promise<TokenResponse> {
-    return apiClient.post('/auth/refresh', { refresh_token: refreshToken }).then((r) => r.data)
-  },
+  logout: () =>
+    apiClient.post('/auth/logout').then(r => r.data),
 
-  getMe(): Promise<UserOut> {
-    return apiClient.get('/auth/me').then((r) => r.data)
-  },
+  me: () =>
+    apiClient.get<User>('/auth/me').then(r => r.data),
 }

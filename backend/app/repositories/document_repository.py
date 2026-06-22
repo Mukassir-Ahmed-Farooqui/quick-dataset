@@ -4,7 +4,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
-from app.models import Document, ProcessingStatus
+from app.models import Document, Chunk, ProcessingStatus
 
 
 class DocumentRepository:
@@ -47,7 +47,7 @@ class DocumentRepository:
         self.db.refresh(doc)
         return doc
 
-    def get_documents(self, project_id: str, skip: int = 0, limit: int = 20) -> list:
+    def list_documents(self, project_id: str, skip: int = 0, limit: int = 50) -> list:
         return (
             self.db.query(Document)
             .filter(Document.project_id == project_id, Document.deleted_at.is_(None))
@@ -56,6 +56,9 @@ class DocumentRepository:
             .limit(limit)
             .all()
         )
+
+    # Alias for backward compat during migration — remove after all callers updated
+    get_documents = list_documents
 
     def get_document(self, project_id: str, document_id: str) -> Document | None:
         return (
@@ -77,10 +80,29 @@ class DocumentRepository:
             self.db.commit()
 
     def soft_delete_document(self, project_id: str, document_id: str) -> bool:
+        """Soft-delete a document and cascade-delete all its chunks.
+
+        Chunks are soft-deleted alongside the document so chunk counts
+        and queries remain consistent. Future cascade targets (Questions,
+        DatasetItems, Conversations) should be added here when those
+        generation steps are implemented.
+        """
         doc = self.get_document(project_id, document_id)
         if not doc:
             return False
-        doc.deleted_at = datetime.utcnow()
+        now = datetime.utcnow()
+        doc.deleted_at = now
+
+        # Cascade: soft-delete all active chunks for this document
+        self.db.query(Chunk).filter(
+            Chunk.document_id == document_id,
+            Chunk.deleted_at.is_(None),
+        ).update({"deleted_at": now})
+
+        # TODO: Cascade to Questions when question generation is live
+        # TODO: Cascade to DatasetItems when dataset generation is live
+        # TODO: Cascade to Conversations when conversation generation is live
+
         self.db.commit()
         return True
 

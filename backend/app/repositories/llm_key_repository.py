@@ -1,4 +1,5 @@
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from datetime import datetime
 from app.models import UserLLMKey, LLMProvider
 from app.schemas import LLMKeyCreate, LLMKeyOut, LLMKeyTestResult
@@ -14,6 +15,22 @@ class LLMKeyRepository:
         if len(api_key) <= 9:
             return "***"
         return f"{api_key[:5]}...{api_key[-4:]}"
+
+    def count_keys(self, user_id: str) -> int:
+        return (
+            self.db.query(func.count(UserLLMKey.id))
+            .filter(UserLLMKey.user_id == user_id)
+            .scalar()
+        ) or 0
+
+    def list_keys(self, user_id: str, skip: int = 0, limit: int = 50) -> list[UserLLMKey]:
+        return (
+            self.db.query(UserLLMKey)
+            .filter(UserLLMKey.user_id == user_id)
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
 
     def get_keys_for_user(self, user_id: str) -> list[LLMKeyOut]:
         db_keys = self.db.query(UserLLMKey).filter(UserLLMKey.user_id == user_id).all()

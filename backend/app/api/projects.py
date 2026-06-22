@@ -1,11 +1,17 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 from app.api.deps import get_db, get_current_user
 from app.core.exceptions import not_found, already_exists
-from app.models import User
+from app.core.crypto import decrypt
+from app.models import User, Document, Question, DatasetItem
 from app.repositories.project_repository import ProjectRepository
-from app.schemas import ProjectCreate, ProjectUpdate, ProjectOut, ProjectDetailOut, ProjectListItemOut, PageEnvelope
+from app.repositories.llm_key_repository import LLMKeyRepository
+from app.schemas import (
+    ProjectCreate, ProjectUpdate, ProjectOut, ProjectDetailOut,
+    ProjectListItemOut, LLMKeyOut, PaginatedResponse, pagination_meta,
+)
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -20,16 +26,87 @@ def create_project(data: ProjectCreate, current_user: User = Depends(get_current
 @router.get("")
 def list_projects(
     page: int = 1,
-    page_size: int = 20,
+    page_size: int = 50,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     repo = ProjectRepository(db)
-    items = repo.get_projects(str(current_user.id), skip=0, limit=1000)
-    total = len(items)
-    start = (page - 1) * page_size
-    paged = items[start:start + page_size]
-    return {"items": paged, "total": total, "page": page, "page_size": page_size}
+    total = repo.count_projects(str(current_user.id))
+    rows = repo.list_projects(str(current_user.id), skip=(page - 1) * page_size, limit=page_size)
+    if not rows:
+        return PaginatedResponse(items=[], pagination=pagination_meta(page, page_size, total))
+
+    project_ids = [str(p.id) for p in rows]
+
+    # Batch-count aggregate fields — one query per metric, not N+1
+    doc_counts = dict(
+        db.query(Document.project_id, func.count(Document.id))
+        .filter(Document.project_id.in_(project_ids), Document.deleted_at.is_(None))
+        .group_by(Document.project_id)
+        .all()
+    )
+    q_counts = dict(
+        db.query(Question.project_id, func.count(Question.id))
+        .filter(Question.project_id.in_(project_ids), Question.deleted_at.is_(None))
+        .group_by(Question.project_id)
+        .all()
+    )
+    d_counts = dict(
+        db.query(DatasetItem.project_id, func.count(DatasetItem.id))
+        .filter(DatasetItem.project_id.in_(project_ids), DatasetItem.deleted_at.is_(None))
+        .group_by(DatasetItem.project_id)
+        .all()
+    )
+
+    key_repo = LLMKeyRepository(db)
+
+    items = []
+    for p in rows:
+        pid = str(p.id)
+
+        # Convert default_llm_key relationship to LLMKeyOut
+        llm_key_out = None
+        if p.default_llm_key:
+            try:
+                raw_key = decrypt(p.default_llm_key.encrypted_api_key)
+                masked = key_repo._mask_key(raw_key)
+                llm_key_out = LLMKeyOut(
+                    id=str(p.default_llm_key.id),
+                    provider=p.default_llm_key.provider.value,
+                    name=p.default_llm_key.name,
+                    masked_key=masked,
+                    is_default=p.default_llm_key.is_default,
+                    is_valid=p.default_llm_key.is_valid,
+                    last_validated_at=p.default_llm_key.last_validated_at,
+                    created_at=p.default_llm_key.created_at,
+                )
+            except Exception:
+                llm_key_out = LLMKeyOut(
+                    id=str(p.default_llm_key.id),
+                    provider=p.default_llm_key.provider.value,
+                    name=p.default_llm_key.name,
+                    masked_key="***",
+                    is_default=p.default_llm_key.is_default,
+                    is_valid=p.default_llm_key.is_valid,
+                    last_validated_at=p.default_llm_key.last_validated_at,
+                    created_at=p.default_llm_key.created_at,
+                )
+
+        items.append(ProjectListItemOut(
+            id=pid,
+            name=p.name,
+            description=p.description,
+            status=p.status.value if hasattr(p.status, 'value') else str(p.status),
+            default_llm_key=llm_key_out,
+            created_at=p.created_at,
+            updated_at=p.updated_at,
+            document_count=doc_counts.get(pid, 0),
+            question_count=q_counts.get(pid, 0),
+            dataset_item_count=d_counts.get(pid, 0),
+            last_activity_at=p.updated_at,
+        ))
+
+    return PaginatedResponse(items=items, pagination=pagination_meta(page, page_size, total))
 
 @router.get("/{project_id}", response_model=ProjectDetailOut)
 def get_project(project_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):

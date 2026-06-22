@@ -1,13 +1,13 @@
-import { Navigate } from 'react-router-dom'
-import { useAuthContext } from '@/contexts/AuthContext'
+import { Navigate, Outlet } from 'react-router-dom'
+import { useAuth } from '@/contexts/AuthContext'
 import LoadingState from '@/components/common/LoadingState'
 
 interface ProtectedRouteProps {
-  children: React.ReactNode
+  children?: React.ReactNode
 }
 
 export default function ProtectedRoute({ children }: ProtectedRouteProps) {
-  const { isAuthenticated, isLoading } = useAuthContext()
+  const { isAuthenticated, isLoading } = useAuth()
 
   if (isLoading) {
     return (
@@ -21,5 +21,5 @@ export default function ProtectedRoute({ children }: ProtectedRouteProps) {
     return <Navigate to="/login" replace />
   }
 
-  return <>{children}</>
+  return <>{children || <Outlet />}</>
 }

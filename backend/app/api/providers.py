@@ -5,7 +5,7 @@ from app.api.deps import get_db, get_current_user
 from app.core.exceptions import not_found
 from app.models import User
 from app.repositories.llm_key_repository import LLMKeyRepository
-from app.schemas import LLMKeyCreate, LLMKeyOut, LLMKeyTestResult, PageEnvelope
+from app.schemas import LLMKeyCreate, LLMKeyOut, LLMKeyTestResult, PaginatedResponse, pagination_meta
 from app.services.llm.provider_factory import ProviderFactory
 from app.core.crypto import decrypt
 
@@ -19,16 +19,35 @@ def create_provider(data: LLMKeyCreate, current_user: User = Depends(get_current
 @router.get("")
 def list_providers(
     page: int = 1,
-    page_size: int = 20,
+    page_size: int = 50,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     repo = LLMKeyRepository(db)
-    items = repo.get_keys_for_user(str(current_user.id))
-    total = len(items)
-    start = (page - 1) * page_size
-    paged = items[start:start + page_size]
-    return {"items": [LLMKeyOut.model_validate(item) for item in paged], "total": total, "page": page, "page_size": page_size}
+    total = repo.count_keys(str(current_user.id))
+    rows = repo.list_keys(str(current_user.id), skip=(page - 1) * page_size, limit=page_size)
+
+    items = []
+    for key in rows:
+        # Decrypt and mask — the ORM model has encrypted_api_key, not masked_key
+        try:
+            raw_key = decrypt(key.encrypted_api_key)
+            masked_key = repo._mask_key(raw_key)
+        except Exception:
+            masked_key = "***"
+
+        items.append(LLMKeyOut(
+            id=str(key.id),
+            provider=key.provider.value if hasattr(key.provider, 'value') else str(key.provider),
+            name=key.name,
+            masked_key=masked_key,
+            is_default=key.is_default,
+            is_valid=key.is_valid,
+            last_validated_at=key.last_validated_at,
+            created_at=key.created_at,
+        ))
+
+    return PaginatedResponse(items=items, pagination=pagination_meta(page, page_size, total))
 
 @router.delete("/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_provider(key_id: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):

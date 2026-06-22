@@ -39,11 +39,9 @@ def split_by_headings(text: str) -> List[dict]:
             heading_text = match.group(2)
             current_level = len(hashes)
             current_heading = heading_text
-            current_path = [h for h in current_path if sections and sections[-1]["level"] < current_level or True]
             # Rebuild path: remove headings at same or deeper level
             while current_path and sections and sections[-1]["level"] >= current_level:
-                # This is a simplification — we track via stack
-                pass
+                current_path.pop()
             current_path = _rebuild_path(sections, current_level) + [heading_text]
             current_lines = []
         else:
@@ -72,11 +70,12 @@ def split_by_headings(text: str) -> List[dict]:
 
 
 def _rebuild_path(sections: List[dict], target_level: int) -> List[str]:
-    path = []
+    """Build heading path from section history, keeping only the most recent heading at each level."""
+    level_headings: dict[int, str] = {}
     for s in sections:
-        if s["level"] < target_level and s["heading"] not in path:
-            path.append(s["heading"])
-    return path
+        if s["level"] < target_level:
+            level_headings[s["level"]] = s["heading"]
+    return [level_headings[lvl] for lvl in sorted(level_headings)]
 
 
 def split_markdown(text: str, chunk_size: int = 1500, chunk_overlap: int = 200) -> List[dict]:

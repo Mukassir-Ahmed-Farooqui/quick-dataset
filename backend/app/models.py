@@ -236,7 +236,16 @@ class Chunk(Base, SoftDeleteMixin):
     questions = relationship("Question", back_populates="chunk")
 
     __table_args__ = (
-        UniqueConstraint("document_id", "chunk_index", name="uq_chunk_order_per_document"),
+        # Partial unique: only enforces uniqueness for active (non-deleted) chunks.
+        # Soft-deleted rows can share (document_id, chunk_index) with active ones
+        # so re-generation after soft-delete doesn't cause IntegrityError.
+        Index(
+            "uq_chunk_order_per_document",
+            "document_id",
+            "chunk_index",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
         # GIN index over to_tsvector, not a plain-column GIN index — plain
         # GIN on text only helps array/jsonb containment, not full-text
         # search. This is what actually makes `search` filters fast once

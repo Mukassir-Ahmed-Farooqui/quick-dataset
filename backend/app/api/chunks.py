@@ -1,5 +1,6 @@
 """Chunks API — preview, generate, list, update, delete."""
 import os
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.orm import Session
 
@@ -8,8 +9,10 @@ from app.models import User
 from app.repositories.chunk_repository import ChunkRepository
 from app.repositories.document_repository import DocumentRepository
 from app.services.chunking import chunk_document, preview_chunks
-from app.schemas import TaskAcceptedResponse, PageEnvelope
+from app.schemas import TaskAcceptedResponse, PaginatedResponse, pagination_meta
 from app.schemas_extended import ChunkGenerateRequest, ChunkPreviewRequest, ChunkPreviewOut, ChunkOut, ChunkUpdate
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/projects/{project_id}/chunks", tags=["chunks"])
 STORAGE_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "storage")
@@ -23,9 +26,12 @@ def _generate_in_background(project_id: str, document_ids: list[str], strategy: 
         repo = ChunkRepository(db)
         doc_repo = DocumentRepository(db)
 
+        logger.info(f"[CHUNK-GEN] Starting: project={project_id}, docs={len(document_ids)}, strategy={strategy}, size={chunk_size}, overlap={chunk_overlap}")
+
         for doc_id in document_ids:
             doc = doc_repo.get_document(project_id, doc_id)
             if not doc:
+                logger.warning(f"[CHUNK-GEN] Document {doc_id} not found, skipping")
                 continue
 
             md_path = os.path.join(STORAGE_DIR, project_id, doc.filename + ".md")
@@ -33,14 +39,19 @@ def _generate_in_background(project_id: str, document_ids: list[str], strategy: 
 
             path = md_path if os.path.exists(md_path) else text_path
             if not os.path.exists(path):
+                logger.warning(f"[CHUNK-GEN] No file on disk for doc {doc_id} ({doc.filename}), skipping")
                 continue
 
             with open(path, "r", encoding="utf-8") as f:
                 text = f.read()
 
+            logger.info(f"[CHUNK-GEN] Doc '{doc.filename}': {len(text):,} chars, {len(text.split()):,} words")
+
             chunks_data = chunk_document(
                 text, strategy=strategy, chunk_size=chunk_size, chunk_overlap=chunk_overlap,
             )
+
+            logger.info(f"[CHUNK-GEN] Doc '{doc.filename}': chunker produced {len(chunks_data)} chunks")
 
             from app.models import Chunk
             chunk_objs = []
@@ -57,12 +68,26 @@ def _generate_in_background(project_id: str, document_ids: list[str], strategy: 
 
             repo.bulk_create(chunk_objs)
             total_created += len(chunk_objs)
+            logger.info(f"[CHUNK-GEN] Doc '{doc.filename}': {len(chunk_objs)} chunks saved to DB")
+
+        logger.info(f"[CHUNK-GEN] Complete: {total_created} total chunks created across {len(document_ids)} documents")
+
+    except Exception as e:
+        logger.error(f"[CHUNK-GEN] Error: {e}", exc_info=True)
+        db.rollback()
+        if task_id:
+            from app.repositories.task_repository import TaskRepository
+            tr = TaskRepository(db)
+            tr.fail_task(task_id, str(e))
+        return
 
     finally:
         if task_id:
             from app.repositories.task_repository import TaskRepository
             tr = TaskRepository(db)
-            tr.complete_task(task_id, completed_count=total_created)
+            task = tr.get_task(task_id)
+            if task and task.status.value != "failed":
+                tr.complete_task(task_id, completed_count=total_created, total_count=total_created)
         db.close()
 
 
@@ -120,7 +145,7 @@ def generate_chunks(
     task = task_repo.create_task(
         project_id=project_id,
         task_type="text-processing",
-        total_count=len(data.document_ids),
+        total_count=0,  # real count set at completion time
     )
     task_repo.start_task(str(task.id))
     task_id = str(task.id)
@@ -138,17 +163,16 @@ def list_chunks(
     project_id: str,
     document_id: str | None = None,
     page: int = 1,
-    page_size: int = 20,
+    page_size: int = 50,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     repo = ChunkRepository(db)
-    rows = repo.get_chunks(project_id, document_id=document_id, skip=0, limit=100000)
-    total = len(rows)
-    start = (page - 1) * page_size
-    paged = rows[start:start + page_size]
-    items = [ChunkOut.model_validate(c) for c in paged]
-    return {"items": items, "total": total, "page": page, "page_size": page_size}
+    rows = repo.list_chunks(project_id, document_id=document_id, skip=(page - 1) * page_size, limit=page_size)
+    total = repo.count_chunks(project_id, document_id=document_id)
+    items = [ChunkOut.model_validate(c) for c in rows]
+    logger.info(f"[CHUNK-LIST] project={project_id}, doc={document_id}, page={page}, page_size={page_size}, total={total}, returned={len(items)}")
+    return PaginatedResponse(items=items, pagination=pagination_meta(page, page_size, total))
 
 
 @router.get("/{chunk_id}", response_model=ChunkOut)

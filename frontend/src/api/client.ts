@@ -1,75 +1,57 @@
-import axios from 'axios'
+import axios, { AxiosError } from 'axios'
 import { config } from '@/lib/config'
-import { getAccessToken, getRefreshToken, setTokens, clearTokens } from '@/lib/token'
+import { getAccessToken, clearTokens } from '@/lib/token'
 
 export const apiClient = axios.create({
   baseURL: config.apiBaseUrl,
-  headers: { 'Content-Type': 'application/json' },
+  timeout: 300000,
 })
 
-// Request interceptor — attach Bearer token if available
-apiClient.interceptors.request.use((req) => {
+// Request interceptor — attach token + set content-type
+apiClient.interceptors.request.use((axiosConfig) => {
   const token = getAccessToken()
-  if (token && req.headers) {
-    req.headers.Authorization = `Bearer ${token}`
+  if (token) {
+    axiosConfig.headers.Authorization = `Bearer ${token}`
   }
-  return req
+
+  // FormData needs the browser to auto-set the multipart boundary header.
+  // For all other requests, force JSON.
+  if (axiosConfig.data instanceof FormData) {
+    delete axiosConfig.headers['Content-Type']
+  } else if (!axiosConfig.headers['Content-Type']) {
+    axiosConfig.headers['Content-Type'] = 'application/json'
+  }
+
+  return axiosConfig
 })
 
-// Response interceptor — refresh on 401, redirect to login on failure
-let isRefreshing = false
-let pendingQueue: Array<{ resolve: (v: unknown) => void; reject: (e: unknown) => void }> = []
-
-function processQueue(error: unknown, token: string | null = null) {
-  pendingQueue.forEach((p) => {
-    if (token) p.resolve(token)
-    else p.reject(error)
-  })
-  pendingQueue = []
-}
-
+// Response interceptor — normalize errors + handle 401
 apiClient.interceptors.response.use(
-  (res) => res,
-  async (error) => {
-    const originalRequest = error.config
-    if (
-      error.response?.status === 401 &&
-      !originalRequest._retry &&
-      !originalRequest.url?.includes('/auth/')
-    ) {
-      if (isRefreshing) {
-        return new Promise((resolve, reject) => {
-          pendingQueue.push({ resolve, reject })
-        }).then((token) => {
-          originalRequest.headers.Authorization = `Bearer ${token}`
-          return apiClient(originalRequest)
-        })
-      }
-      originalRequest._retry = true
-      isRefreshing = true
-      const refreshToken = getRefreshToken()
-      if (!refreshToken) {
-        clearTokens()
-        window.location.href = '/login'
-        return Promise.reject(error)
-      }
-      try {
-        const { data } = await axios.post(`${config.apiBaseUrl}/auth/refresh`, {
-          refresh_token: refreshToken,
-        })
-        setTokens(data.access_token, data.refresh_token)
-        processQueue(null, data.access_token)
-        originalRequest.headers.Authorization = `Bearer ${data.access_token}`
-        return apiClient(originalRequest)
-      } catch (refreshError) {
-        processQueue(refreshError, null)
-        clearTokens()
-        window.location.href = '/login'
-        return Promise.reject(refreshError)
-      } finally {
-        isRefreshing = false
-      }
+  (response) => response,
+  (error: AxiosError<{ detail?: unknown; message?: string }>) => {
+    if (error.response?.status === 401) {
+      clearTokens()
+      window.location.href = '/login'
     }
-    return Promise.reject(error)
+
+    let message = 'Something went wrong'
+    const data = error.response?.data
+
+    if (typeof data?.detail === 'string') {
+      message = data.detail
+    } else if (Array.isArray(data?.detail) && data.detail.length > 0) {
+      // FastAPI validation errors
+      const msgs = data.detail.map((e: { msg: string; loc: string[] }) => {
+        const field = e.loc?.filter(l => l !== 'body').join('.') || 'unknown'
+        return `${field}: ${e.msg}`
+      })
+      message = msgs.join('; ')
+    } else if (data?.message) {
+      message = data.message
+    } else if (error.message) {
+      message = error.message
+    }
+
+    return Promise.reject(new Error(message))
   },
 )

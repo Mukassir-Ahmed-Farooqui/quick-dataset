@@ -1,12 +1,8 @@
-const ACCESS_KEY = 'df_access_token'
-const REFRESH_KEY = 'df_refresh_token'
+const ACCESS_KEY = 'access_token'
+const REFRESH_KEY = 'refresh_token'
 
 export function getAccessToken(): string | null {
   return localStorage.getItem(ACCESS_KEY)
-}
-
-export function getRefreshToken(): string | null {
-  return localStorage.getItem(REFRESH_KEY)
 }
 
 export function setTokens(access: string, refresh: string): void {

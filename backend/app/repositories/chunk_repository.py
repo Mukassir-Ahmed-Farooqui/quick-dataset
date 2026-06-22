@@ -4,6 +4,8 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
+import tiktoken
+
 from app.models import Chunk
 
 
@@ -29,6 +31,8 @@ class ChunkRepository:
             chunk_metadata=metadata,
         )
         self.db.add(chunk)
+        self.db.commit()
+        self.db.refresh(chunk)
         return chunk
 
     def bulk_create(self, chunks: list[Chunk]) -> list[Chunk]:
@@ -38,8 +42,8 @@ class ChunkRepository:
             self.db.refresh(c)
         return chunks
 
-    def get_chunks(
-        self, project_id: str, document_id: str | None = None, skip: int = 0, limit: int = 100
+    def list_chunks(
+        self, project_id: str, document_id: str | None = None, skip: int = 0, limit: int = 50
     ) -> list[Chunk]:
         q = (
             self.db.query(Chunk)
@@ -48,6 +52,9 @@ class ChunkRepository:
         if document_id:
             q = q.filter(Chunk.document_id == document_id)
         return q.order_by(Chunk.chunk_index).offset(skip).limit(limit).all()
+
+    # Alias for backward compat during migration
+    get_chunks = list_chunks
 
     def get_chunk(self, project_id: str, chunk_id: str) -> Chunk | None:
         return (
@@ -64,7 +71,6 @@ class ChunkRepository:
         chunk = self.get_chunk(project_id, chunk_id)
         if not chunk:
             return False
-        import tiktoken
         enc = tiktoken.get_encoding("cl100k_base")
         chunk.content = content
         chunk.token_count = len(enc.encode(content))
@@ -92,9 +98,11 @@ class ChunkRepository:
         self.db.commit()
         return count
 
-    def count_chunks(self, project_id: str) -> int:
-        return (
+    def count_chunks(self, project_id: str, document_id: str | None = None) -> int:
+        q = (
             self.db.query(func.count(Chunk.id))
             .filter(Chunk.project_id == project_id, Chunk.deleted_at.is_(None))
-            .scalar()
-        ) or 0
+        )
+        if document_id:
+            q = q.filter(Chunk.document_id == document_id)
+        return q.scalar() or 0

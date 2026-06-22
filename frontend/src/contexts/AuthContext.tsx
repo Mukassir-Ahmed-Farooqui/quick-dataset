@@ -1,48 +1,40 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react'
 import { authApi } from '@/api/auth'
-import { getAccessToken, getRefreshToken, setTokens, clearTokens } from '@/lib/token'
-import type { UserOut, RegisterRequest } from '@/types/api'
+import { getAccessToken, setTokens, clearTokens } from '@/lib/token'
+import type { User, LoginPayload, RegisterPayload } from '@/types/api'
 
-interface AuthContextValue {
-  user: UserOut | null
-  isLoading: boolean
+interface AuthState {
+  user: User | null
   isAuthenticated: boolean
-  login: (email: string, password: string) => Promise<void>
-  register: (data: RegisterRequest) => Promise<void>
-  logout: () => void
+  isLoading: boolean
+}
+
+interface AuthContextValue extends AuthState {
+  login: (payload: LoginPayload) => Promise<void>
+  register: (payload: RegisterPayload) => Promise<void>
+  logout: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<UserOut | null>(null)
+  const [user, setUser] = useState<User | null>(null)
   const [isLoading, setIsLoading] = useState(true)
 
-  // On mount — check localStorage tokens and validate with /auth/me
+  // On mount — if token exists, rehydrate user from /auth/me
   useEffect(() => {
     const init = async () => {
-      const access = getAccessToken()
-      const refresh = getRefreshToken()
-      if (!access && !refresh) {
+      const token = getAccessToken()
+      if (!token) {
         setIsLoading(false)
         return
       }
       try {
-        const me = await authApi.getMe()
+        const me = await authApi.me()
         setUser(me)
       } catch {
-        // access token expired — try refresh
-        if (refresh) {
-          try {
-            const data = await authApi.refresh(refresh)
-            setTokens(data.access_token, data.refresh_token)
-            setUser(data.user)
-          } catch {
-            clearTokens()
-          }
-        } else {
-          clearTokens()
-        }
+        clearTokens()
+        setUser(null)
       } finally {
         setIsLoading(false)
       }
@@ -50,34 +42,49 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     init()
   }, [])
 
-  const login = useCallback(async (email: string, password: string) => {
-    const data = await authApi.login({ email, password })
+  const login = useCallback(async (payload: LoginPayload) => {
+    const data = await authApi.login(payload)
     setTokens(data.access_token, data.refresh_token)
     setUser(data.user)
   }, [])
 
-  const register = useCallback(async (data: RegisterRequest) => {
-    await authApi.register(data)
+  const register = useCallback(async (payload: RegisterPayload) => {
+    // Register account first
+    await authApi.register(payload)
+    // Then auto-login to get tokens
+    const data = await authApi.login({ email: payload.email, password: payload.password })
+    setTokens(data.access_token, data.refresh_token)
+    setUser(data.user)
   }, [])
 
-  const logout = useCallback(() => {
+  const logout = useCallback(async () => {
+    try {
+      await authApi.logout()
+    } catch {
+      // fire-and-forget — ignore errors
+    }
     clearTokens()
     setUser(null)
   }, [])
 
   return (
     <AuthContext.Provider
-      value={{ user, isLoading, isAuthenticated: !!user, login, register, logout }}
+      value={{
+        user,
+        isAuthenticated: !!user,
+        isLoading,
+        login,
+        register,
+        logout,
+      }}
     >
       {children}
     </AuthContext.Provider>
   )
 }
 
-export const useAuthContext = () => {
+export function useAuth() {
   const ctx = useContext(AuthContext)
-  if (!ctx) throw new Error('useAuthContext must be used within AuthProvider')
+  if (!ctx) throw new Error('useAuth must be used within AuthProvider')
   return ctx
 }
-
-export default AuthContext

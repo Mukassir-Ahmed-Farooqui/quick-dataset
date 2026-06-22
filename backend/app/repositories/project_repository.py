@@ -59,6 +59,22 @@ class ProjectRepository:
         
         return self.get_project_detail(user_id, str(db_project.id))
 
+    def count_projects(self, user_id: str) -> int:
+        return (
+            self.db.query(func.count(Project.id))
+            .filter(Project.owner_id == user_id, Project.deleted_at == None)
+            .scalar()
+        ) or 0
+
+    def list_projects(self, user_id: str, skip: int = 0, limit: int = 50) -> list[Project]:
+        return (
+            self.db.query(Project)
+            .filter(Project.owner_id == user_id, Project.deleted_at == None)
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
+
     def get_projects(self, user_id: str, skip: int = 0, limit: int = 20) -> list[ProjectListItemOut]:
         db_projects = self.db.query(Project).filter(
             Project.owner_id == user_id,
