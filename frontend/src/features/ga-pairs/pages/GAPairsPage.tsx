@@ -20,7 +20,7 @@ import type { GAPairOut } from '@/types/api'
 export default function GAPairsPage() {
   const { projectId } = useParams<{ projectId: string }>()
   const navigate = useNavigate()
-  const { data: docsData } = useDocuments(projectId!)
+  const { data: docsData, isError: docsIsError, error: docsError } = useDocuments(projectId!)
   const docs = docsData?.items?.filter(d => d.processing_status === 'parsed') ?? []
 
   const [selectedDocIds, setSelectedDocIds] = useState<string[]>([])
@@ -29,12 +29,15 @@ export default function GAPairsPage() {
   const [pageSize, setPageSize] = useState(50)
 
   const activeDocId = selectedDocIds.length === 1 ? selectedDocIds[0] : undefined
-  const { data, isLoading, isError, refetch } = useGAPairs(projectId!, { documentId: activeDocId, page, pageSize })
+  const { data, isLoading, isError: pairsIsError, error: pairsError, refetch } = useGAPairs(projectId!, { documentId: activeDocId, page, pageSize })
   const generateMutation = useGenerateGAPairs(projectId!)
   const estimateMutation = useEstimateGAPairs(projectId!)
   const updateMutation = useUpdateGAPair(projectId!)
   const deleteMutation = useDeleteGAPair(projectId!)
   const pairs = data?.items ?? []
+
+  const anyError = docsIsError || pairsIsError
+  const firstError = docsError || pairsError
 
   const [estimateResult, setEstimateResult] = useState<{ cost: number; items: number; warning?: string } | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -226,8 +229,8 @@ export default function GAPairsPage() {
       {/* Pair list */}
       {isLoading ? (
         <LoadingState />
-      ) : isError ? (
-        <ErrorState message="Failed to load GA pairs" onRetry={refetch} />
+      ) : anyError ? (
+        <ErrorState error={firstError} onRetry={refetch} />
       ) : pairs.length === 0 ? (
         <motion.div variants={fadeUp}>
           <EmptyState

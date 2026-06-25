@@ -62,7 +62,7 @@ export default function ProjectsPage() {
 
       {isError ? (
         <motion.div variants={fadeUp}>
-          <ErrorState message={errorMessage} onRetry={refetch} />
+          <ErrorState error={error} onRetry={refetch} />
         </motion.div>
       ) : projects.length === 0 && !isLoading ? (
         <motion.div variants={fadeUp}>

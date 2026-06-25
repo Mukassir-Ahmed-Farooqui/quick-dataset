@@ -41,37 +41,37 @@ async def generate_ga_pairs(
     project_id: str,
     user_id: str,
     document_ids: list[str],
+    task_id: str,
+    generation_run_id: str,
     *,
     pairs_per_document: int = DEFAULT_PAIRS_PER_DOC,
     llm_key_id: Optional[str] = None,
     model: str = DEFAULT_MODEL,
     temperature: float = 0.7,
     max_tokens: int = 2048,
-) -> dict:
+) -> None:
     """Generate GA pairs for the specified documents.
 
     This is the background task entry point. It manages the full lifecycle:
-    1. Creates GenerationRun + Task
-    2. Loads prompt
-    3. Resolves LLM config
-    4. Calls LLM per document
-    5. Parses + validates JSON output
-    6. Creates GA pair rows
-    7. Completes/fails run and task
+    1. Loads prompt
+    2. Resolves LLM config
+    3. Calls LLM per document
+    4. Parses + validates JSON output
+    5. Creates GA pair rows
+    6. Completes/fails run and task
 
     Args:
         db: Active DB session (caller creates/finalizes).
         project_id: Project scope.
         user_id: Current user id.
         document_ids: Documents to generate pairs for.
+        task_id: Background task ID.
+        generation_run_id: Generation run ID.
         pairs_per_document: Number of pairs per document.
         llm_key_id: Optional LLM key override.
         model: Model name for generation.
         temperature: Sampling temperature.
         max_tokens: Max tokens for response.
-
-    Returns:
-        dict with task_id and generation_run_id.
     """
     doc_repo = DocumentRepository(db)
     pair_repo = GAPairRepository(db)
@@ -93,26 +93,9 @@ async def generate_ga_pairs(
         max_tokens=max_tokens,
     )
 
-    # 3. Create generation run
-    total_expected = len(document_ids) * pairs_per_document
-    run = run_svc.create_run(
-        project_id=project_id,
-        run_type=GenerationRunType.ga_generation,
-        model_name=model,
-        prompt_type=PromptType.ga,
-        prompt_version=prompt_version,
-        total_items=total_expected,
-    )
-
-    # 4. Create task
-    task = task_repo.create_task(
-        project_id=project_id,
-        task_type="ga-generation",
-        total_count=len(document_ids),
-        generation_run_id=str(run.id),
-    )
-    task_repo.start_task(str(task.id))
-    run_svc.start_run(str(run.id))
+    # 3. Start task and run
+    task_repo.start_task(task_id)
+    run_svc.start_run(generation_run_id)
 
     # 5. Generate pairs per document
     all_pairs: list[GAPair] = []
@@ -151,7 +134,7 @@ async def generate_ga_pairs(
                         model=model,
                         temperature=temperature,
                         max_tokens=max_tokens,
-                        task_id=str(task.id),
+                        task_id=task_id,
                     )
                     raw_output = response.content
                     break
@@ -191,7 +174,7 @@ async def generate_ga_pairs(
                     errors.append({"item_id": doc_id, "message": f"Failed to create pair row: {str(e)}"})
 
             processed_docs += 1
-            task_repo.update_progress(str(task.id), completed_increment=1)
+            task_repo.update_progress(task_id, completed_increment=1)
 
         # Bulk insert all pairs
         if all_pairs:
@@ -199,14 +182,14 @@ async def generate_ga_pairs(
 
         # Complete run
         run_svc.complete_run(
-            str(run.id),
+            generation_run_id,
             processed_items=len(all_pairs),
             total_items=len(all_pairs),
         )
 
         # Complete task — called ONCE at the very end, NOT in the loop
         task_repo.complete_task(
-            str(task.id),
+            task_id,
             completed_count=processed_docs,
             error_count=len(errors),
             total_count=len(document_ids),
@@ -219,14 +202,9 @@ async def generate_ga_pairs(
 
     except Exception as e:
         logger.error("GA generation failed | project=%s error=%s", project_id, str(e))
-        run_svc.fail_run(str(run.id), error_message=str(e), processed_items=len(all_pairs))
-        task_repo.fail_task(str(task.id), str(e))
+        run_svc.fail_run(generation_run_id, error_message=str(e), processed_items=len(all_pairs))
+        task_repo.fail_task(task_id, str(e))
         raise
-
-    return {
-        "task_id": str(task.id),
-        "generation_run_id": str(run.id),
-    }
 
 
 def _parse_ga_output(raw_output: str) -> Optional[list[dict]]:

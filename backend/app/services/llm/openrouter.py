@@ -63,6 +63,21 @@ class OpenRouterProvider(BaseLLMProvider):
                 latency_ms=latency_ms,
                 error=None
             )
+        except httpx.HTTPStatusError as e:
+            latency_ms = int((time.time() - start_time) * 1000)
+            error_map = {
+                401: "Invalid API key (401 Unauthorized)",
+                402: "Insufficient credits (402 Payment Required)",
+                429: "Rate limit exceeded (429 Too Many Requests)",
+            }
+            error_msg = error_map.get(e.response.status_code, f"HTTP {e.response.status_code}: {str(e)}")
+            return ProviderTestResult(
+                success=False,
+                provider="openrouter",
+                model=test_model,
+                latency_ms=latency_ms,
+                error=error_msg
+            )
         except Exception as e:
             latency_ms = int((time.time() - start_time) * 1000)
             return ProviderTestResult(

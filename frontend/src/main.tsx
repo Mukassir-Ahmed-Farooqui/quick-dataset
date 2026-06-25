@@ -5,6 +5,8 @@ import { AuthProvider } from '@/contexts/AuthContext'
 import App from './App'
 import './index.css'
 
+import { GlobalErrorBoundary } from './ErrorBoundary'
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -16,10 +18,12 @@ const queryClient = new QueryClient({
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <AuthProvider>
-        <App />
-      </AuthProvider>
-    </QueryClientProvider>
+    <GlobalErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <AuthProvider>
+          <App />
+        </AuthProvider>
+      </QueryClientProvider>
+    </GlobalErrorBoundary>
   </StrictMode>,
 )

@@ -325,6 +325,14 @@ class Question(Base, SoftDeleteMixin):
     dataset_items = relationship("DatasetItem", back_populates="question")
     conversations = relationship("Conversation", back_populates="question")
 
+    @property
+    def document_id(self):
+        return self.chunk.document_id if self.chunk else None
+
+    @property
+    def document_filename(self):
+        return self.chunk.document.filename if self.chunk and self.chunk.document else None
+
     __table_args__ = (
         Index("ix_questions_project_answered", "project_id", "answered"),
         Index(
@@ -378,6 +386,16 @@ class DatasetItem(Base, SoftDeleteMixin):
     project = relationship("Project", back_populates="dataset_items")
     question = relationship("Question", back_populates="dataset_items")
     generation_run = relationship("GenerationRun", back_populates="dataset_items")
+    source_document = relationship("Document", foreign_keys=[source_document_id])
+    source_chunk = relationship("Chunk", foreign_keys=[source_chunk_id])
+
+    @property
+    def source_document_filename(self):
+        return self.source_document.filename if self.source_document else None
+
+    @property
+    def source_chunk_index(self):
+        return self.source_chunk.chunk_index if self.source_chunk else None
 
     __table_args__ = (
         Index("ix_datasets_project_confirmed", "project_id", "confirmed"),

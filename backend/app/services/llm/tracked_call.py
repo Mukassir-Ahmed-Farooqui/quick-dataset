@@ -21,6 +21,7 @@ Usage:
 
 import time
 import logging
+import asyncio
 from typing import Optional
 from sqlalchemy.orm import Session
 
@@ -78,12 +79,15 @@ async def tracked_complete(
         # Create provider client
         provider = ProviderFactory.create(provider_name, config.api_key)
 
-        # Make the actual LLM call
-        response = await provider.complete(
-            messages=messages,
-            model=model,
-            temperature=temperature,
-            max_tokens=max_tokens,
+        # Make the actual LLM call with a hard wall-clock timeout
+        response = await asyncio.wait_for(
+            provider.complete(
+                messages=messages,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            ),
+            timeout=90.0
         )
 
         latency_ms = int((time.time() - start_time) * 1000)
@@ -123,7 +127,12 @@ async def tracked_complete(
 
     except Exception as e:
         latency_ms = int((time.time() - start_time) * 1000)
-        error_message = str(e)
+        
+        if isinstance(e, asyncio.TimeoutError) or isinstance(e, TimeoutError):
+            error_message = "LLM request exceeded 90 seconds timeout."
+        else:
+            error_message = str(e) or e.__class__.__name__
+            
         status = "error"
 
         # Write failure usage log (input_tokens may be partial or 0)
@@ -147,6 +156,9 @@ async def tracked_complete(
             provider_name, model, latency_ms, error_message,
         )
 
+        if isinstance(e, asyncio.TimeoutError) or isinstance(e, TimeoutError):
+            raise TimeoutError(error_message) from e
+            
         raise
 
 

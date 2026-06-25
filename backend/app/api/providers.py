@@ -5,7 +5,7 @@ from app.api.deps import get_db, get_current_user
 from app.core.exceptions import not_found
 from app.models import User
 from app.repositories.llm_key_repository import LLMKeyRepository
-from app.schemas import LLMKeyCreate, LLMKeyOut, LLMKeyTestResult, PaginatedResponse, pagination_meta
+from app.schemas import LLMKeyCreate, LLMKeyUpdate, LLMKeyOut, LLMKeyTestResult, PaginatedResponse, pagination_meta
 from app.services.llm.provider_factory import ProviderFactory
 from app.core.crypto import decrypt
 
@@ -15,6 +15,20 @@ router = APIRouter(prefix="/providers", tags=["providers"])
 def create_provider(data: LLMKeyCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     repo = LLMKeyRepository(db)
     return repo.create_key(str(current_user.id), data)
+
+@router.patch("/{key_id}", response_model=LLMKeyOut)
+def update_provider(
+    key_id: str,
+    data: LLMKeyUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Edit an API key's name, api_key (rotation), or is_default flag."""
+    repo = LLMKeyRepository(db)
+    result = repo.update_key(str(current_user.id), key_id, data)
+    if not result:
+        raise not_found("API Key")
+    return result
 
 @router.get("")
 def list_providers(

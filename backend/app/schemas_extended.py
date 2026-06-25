@@ -147,6 +147,8 @@ class QuestionOut(BaseModel):
     answered: bool
     reviewed_at: Optional[datetime]
     created_at: datetime
+    document_id: Optional[str] = None
+    document_filename: Optional[str] = None
 
 
 class QuestionBulkDeleteRequest(BaseModel):
@@ -165,6 +167,19 @@ class QuestionListFilters(BaseModel):
     ga_pair_id: Optional[str] = None
     generation_run_id: Optional[str] = None
     search: Optional[str] = None
+
+
+class QuestionStatsDocument(BaseModel):
+    document_id: Optional[str] = None
+    document_filename: Optional[str] = None
+    unanswered_count: int
+    unanswered_question_ids: list[str]
+
+class QuestionStatsResponse(BaseModel):
+    total: int
+    answered: int
+    unanswered: int
+    documents: list[QuestionStatsDocument]
 
 
 # ── Answer generation + Dataset items ───────────────────────────────
@@ -224,6 +239,8 @@ class DatasetItemOut(BaseModel):
     confirmed: bool
     created_at: datetime
     updated_at: datetime
+    source_document_filename: Optional[str] = None
+    source_chunk_index: Optional[int] = None
 
 
 class DatasetListFilters(BaseModel):

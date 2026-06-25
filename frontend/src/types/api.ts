@@ -62,6 +62,12 @@ export interface LLMKeyCreate {
   is_default?: boolean
 }
 
+export interface LLMKeyUpdate {
+  name?: string
+  api_key?: string
+  is_default?: boolean
+}
+
 export type LLMProvider = 'openrouter' | 'openai' | 'groq' | 'gemini'
 
 export interface LLMKeyOut {
@@ -182,6 +188,79 @@ export interface ChunkPreviewOut {
   estimated_total_chunks: number
 }
 
+// ── Questions ────────────────────────────────────────────────────────
+
+export interface QuestionOut {
+  id: string
+  chunk_id: string
+  ga_pair_id: string | null
+  generation_run_id: string | null
+  question: string
+  answered: boolean
+  reviewed_at: string | null
+  created_at: string
+  document_id: string | null
+  document_filename: string | null
+}
+
+export interface QuestionStatsDocument {
+  document_id: string | null
+  document_filename: string | null
+  unanswered_count: number
+  unanswered_question_ids: string[]
+}
+
+export interface QuestionStatsResponse {
+  total: number
+  answered: number
+  unanswered: number
+  documents: QuestionStatsDocument[]
+}
+
+export interface QuestionCreate {
+  chunk_id: string
+  ga_pair_id?: string
+  question: string
+}
+
+export interface QuestionUpdate {
+  question?: string
+}
+
+export interface QuestionBulkDeleteRequest {
+  ids: string[]
+}
+
+export interface QuestionBulkUpdateRequest {
+  ids: string[]
+  patch: QuestionUpdate
+}
+
+export interface QuestionGeneratePayload {
+  chunk_ids: string[]
+  ga_pair_ids?: string[]
+  dataset_type?: 'qa' | 'mcq' | 'conversation' | 'classification'
+  questions_per_combination?: number
+  llm_key_id?: string
+  temperature_override?: number
+  max_tokens_override?: number
+}
+
+// ── Generation Runs ──────────────────────────────────────────────────
+
+export interface GenerationRunOut {
+  id: string
+  run_type: string
+  dataset_type: string | null
+  model_name: string
+  prompt_type: string | null
+  prompt_version: number | null
+  status: string
+  total_items: number
+  processed_items: number
+  created_at: string
+}
+
 export interface TaskAcceptedResponse {
   task_id: string
   generation_run_id: string
@@ -202,4 +281,124 @@ export interface TaskOut {
   error_log: TaskErrorEntry[]
   started_at: string | null
   completed_at: string | null
+}
+
+// ── Dataset Items ───────────────────────────────────────────────────
+
+export interface DatasetItemOut {
+  id: string
+  question_id: string
+  generation_run_id: string | null
+  dataset_type: 'qa' | 'mcq' | 'conversation' | 'classification'
+  payload: Record<string, unknown>
+  answer_type: string
+  cot: string | null
+  cot_source: string
+  score: number | null
+  ai_evaluation: string | null
+  confirmed: boolean
+  created_at: string
+  updated_at: string
+  source_document_filename: string | null
+  source_chunk_index: number | null
+}
+
+export interface DatasetItemUpdate {
+  payload?: Record<string, unknown>
+  cot?: string
+  confirmed?: boolean
+}
+
+export interface AnswerGeneratePayload {
+  question_ids: string[]
+  dataset_type?: 'qa' | 'mcq' | 'conversation' | 'classification'
+  llm_key_id?: string
+  temperature_override?: number
+  max_tokens_override?: number
+}
+
+export interface DatasetBulkConfirmRequest {
+  ids: string[]
+  confirmed: boolean
+}
+
+export interface DatasetBulkDeleteRequest {
+  ids: string[]
+}
+
+// ── Exports ─────────────────────────────────────────────────────────
+
+export interface ExportFilter {
+  confirmed?: boolean
+  min_score?: number
+  generation_run_id?: string
+}
+
+export interface ExportCreate {
+  export_type: 'json' | 'jsonl' | 'alpaca' | 'sharegpt'
+  filter: ExportFilter
+}
+
+export interface ExportOut {
+  id: string
+  export_type: string
+  filter_snapshot: ExportFilter
+  status: 'generating' | 'ready' | 'failed'
+  storage_url: string | null
+  row_count: number | null
+  created_at: string
+}
+
+// ── Search ──────────────────────────────────────────────────────────
+
+export interface SearchResult {
+  entity_type: 'document' | 'chunk' | 'question' | 'dataset_item' | 'conversation'
+  entity_id: string
+  title: string
+  snippet: string
+}
+
+export interface SearchResponse {
+  results: SearchResult[]
+  total: number
+}
+
+// ── Prompts ─────────────────────────────────────────────────────────
+
+export interface PromptOut {
+  prompt_type: string
+  content: string
+  version: number
+  is_system_default: boolean
+  created_at: string | null
+}
+
+export interface PromptUpsertRequest {
+  content: string
+}
+
+export interface PromptRenderRequest {
+  prompt_type: string
+  content: string
+  variables: Record<string, string>
+}
+
+export interface PromptRenderResponse {
+  rendered_prompt: string
+  unresolved_variables: string[]
+}
+
+export interface PromptTestRequest {
+  prompt_type: string
+  content: string
+  variables: Record<string, string>
+  llm_key_id: string
+}
+
+export interface PromptTestResponse {
+  rendered_prompt: string
+  llm_output: string
+  input_tokens: number
+  output_tokens: number
+  latency_ms: number
 }

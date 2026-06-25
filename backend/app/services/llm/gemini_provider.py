@@ -58,6 +58,17 @@ class GeminiProvider(BaseLLMProvider):
             await self.complete(messages=[{"role": "user", "content": "Ping"}], model=test_model, max_tokens=10)
             latency_ms = int((time.time() - start_time) * 1000)
             return ProviderTestResult(success=True, provider="gemini", model=test_model, latency_ms=latency_ms)
+        except httpx.HTTPStatusError as e:
+            latency_ms = int((time.time() - start_time) * 1000)
+            error_map = {
+                400: "Invalid API key or request (400 Bad Request)",
+                401: "Invalid API key (401 Unauthorized)",
+                402: "Insufficient credits (402 Payment Required)",
+                403: "Permission Denied (403 Forbidden)",
+                429: "Rate limit exceeded (429 Too Many Requests)",
+            }
+            error_msg = error_map.get(e.response.status_code, f"HTTP {e.response.status_code}: {str(e)}")
+            return ProviderTestResult(success=False, provider="gemini", model=test_model, latency_ms=latency_ms, error=error_msg)
         except Exception as e:
             latency_ms = int((time.time() - start_time) * 1000)
             return ProviderTestResult(success=False, provider="gemini", model=test_model, latency_ms=latency_ms, error=str(e))

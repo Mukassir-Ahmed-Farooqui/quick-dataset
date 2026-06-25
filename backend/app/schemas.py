@@ -108,6 +108,15 @@ class LLMKeyCreate(BaseModel):
     is_default: bool = False
 
 
+class LLMKeyUpdate(BaseModel):
+    """PATCH body for editing an existing API key.
+    All fields optional — only provided fields are updated.
+    Supplying api_key rotates the key while keeping the same UUID."""
+    name: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    api_key: Optional[str] = Field(default=None, min_length=10)
+    is_default: Optional[bool] = None
+
+
 class LLMKeyOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: str

@@ -26,3 +26,8 @@ backend/*.db
 
 # Generated docs (not the source .md files at root)
 docs/
+
+# Custom test scripts
+test_scripts/
+backend/test_scripts/
+frontend/test_scripts/

@@ -58,13 +58,15 @@ SYSTEM_PROMPTS: dict[PromptType, str] = {
     ),
     PromptType.question: (
         "You are a question generation expert. Given the following chunk of "
-        "content and a Genre/Audience specification, generate {questions_per_combination} "
-        "question(s) that test understanding of the content.\n\n"
+        "content and a Genre/Audience specification, generate exactly "
+        "{questions_per_combination} question(s) that test understanding of the "
+        "content.\n\n"
         "Genre: {genre}\n"
         "Audience: {audience}\n\n"
         "Content:\n{content}\n\n"
-        "Generate {questions_per_combination} question(s) appropriate for the "
-        "specified genre and audience. Return each question on a new line."
+        "IMPORTANT: Return ONLY a JSON array of strings. "
+        "Example: [\"What is the main concept?\", \"How does this work?\"]\n"
+        "No explanations, no numbering, no markdown. Valid JSON only."
     ),
     PromptType.answer: (
         "You are an answer generation expert. Given the following question and "

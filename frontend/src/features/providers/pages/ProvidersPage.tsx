@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Plug, Loader2, Trash2, RefreshCw } from 'lucide-react'
+import { Plug, Loader2, Trash2, RefreshCw, Edit2, CheckCircle2, XCircle, HelpCircle } from 'lucide-react'
 import { motion } from 'framer-motion'
 import PageHeader from '@/components/common/PageHeader'
 import EmptyState from '@/components/common/EmptyState'
@@ -15,6 +15,7 @@ import { useProviders, useDeleteProvider, useTestProvider } from '@/hooks/usePro
 import { toast } from '@/lib/toast'
 import { stagger, fadeUp } from '@/lib/animations'
 import AddKeyDialog from '@/features/providers/components/AddKeyDialog'
+import EditKeyDialog from '@/features/providers/components/EditKeyDialog'
 import type { LLMKeyOut } from '@/types/api'
 
 const providerIcons: Record<string, string> = {
@@ -26,6 +27,7 @@ const providerIcons: Record<string, string> = {
 
 export default function ProvidersPage() {
   const [addOpen, setAddOpen] = useState(false)
+  const [editTarget, setEditTarget] = useState<LLMKeyOut | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<LLMKeyOut | null>(null)
   const [testingId, setTestingId] = useState<string | null>(null)
   const [page, setPage] = useState(1)
@@ -91,7 +93,7 @@ export default function ProvidersPage() {
 
       {isError ? (
         <motion.div variants={fadeUp}>
-          <ErrorState message={error instanceof Error ? error.message : 'Failed to load API keys'} onRetry={refetch} />
+          <ErrorState error={error} onRetry={refetch} />
         </motion.div>
       ) : keys.length === 0 ? (
         <motion.div variants={fadeUp}>
@@ -125,19 +127,50 @@ export default function ProvidersPage() {
                     {key.masked_key}
                   </div>
 
-                  <div className="flex items-center gap-2 text-xs text-muted">
-                    <span>Added {new Date(key.created_at).toLocaleDateString()}</span>
-                    {key.is_default && (
-                      <>
-                        <span>&middot;</span>
-                        <Badge variant="secondary" className="text-[10px]">Default</Badge>
-                      </>
+                  <div className="flex flex-col gap-1.5 text-xs text-muted">
+                    <div className="flex items-center gap-2">
+                      <span>Added {new Date(key.created_at).toLocaleDateString()}</span>
+                      {key.is_default && (
+                        <>
+                          <span>&middot;</span>
+                          <Badge variant="secondary" className="text-[10px]">Default</Badge>
+                        </>
+                      )}
+                    </div>
+                    {key.last_validated_at ? (
+                      <div className="flex items-center gap-1.5">
+                        {key.is_valid === true ? (
+                          <CheckCircle2 className="h-3.5 w-3.5 text-success" />
+                        ) : key.is_valid === false ? (
+                          <XCircle className="h-3.5 w-3.5 text-error" />
+                        ) : (
+                          <HelpCircle className="h-3.5 w-3.5" />
+                        )}
+                        <span>
+                          Tested {new Date(key.last_validated_at).toLocaleDateString()}{' '}
+                          {new Date(key.last_validated_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5 text-body-muted">
+                        <HelpCircle className="h-3.5 w-3.5" />
+                        <span>Never tested</span>
+                      </div>
                     )}
                   </div>
 
                   <Separator />
 
                   <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setEditTarget(key)}
+                      className="flex-1"
+                    >
+                      <Edit2 className="h-3.5 w-3.5 mr-1.5" />
+                      Edit
+                    </Button>
                     <Button
                       variant="outline"
                       size="sm"
@@ -177,6 +210,7 @@ export default function ProvidersPage() {
       )}
 
       <AddKeyDialog open={addOpen} onOpenChange={setAddOpen} />
+      <EditKeyDialog keyData={editTarget} open={!!editTarget} onOpenChange={(o) => !o && setEditTarget(null)} />
 
       <ConfirmDialog
         open={!!deleteTarget}

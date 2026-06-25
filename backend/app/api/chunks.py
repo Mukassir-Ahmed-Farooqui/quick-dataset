@@ -69,6 +69,11 @@ def _generate_in_background(project_id: str, document_ids: list[str], strategy: 
             repo.bulk_create(chunk_objs)
             total_created += len(chunk_objs)
             logger.info(f"[CHUNK-GEN] Doc '{doc.filename}': {len(chunk_objs)} chunks saved to DB")
+            
+            if task_id:
+                from app.repositories.task_repository import TaskRepository
+                tr = TaskRepository(db)
+                tr.update_progress(task_id, completed_increment=1)
 
         logger.info(f"[CHUNK-GEN] Complete: {total_created} total chunks created across {len(document_ids)} documents")
 
@@ -145,7 +150,7 @@ def generate_chunks(
     task = task_repo.create_task(
         project_id=project_id,
         task_type="text-processing",
-        total_count=0,  # real count set at completion time
+        total_count=len(data.document_ids),
     )
     task_repo.start_task(str(task.id))
     task_id = str(task.id)

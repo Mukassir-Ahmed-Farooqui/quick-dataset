@@ -2,7 +2,7 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   ArrowLeft, Trash2, Upload, Eye, Play, Edit3, Check, X, File, Loader2, Layers, ChevronDown, ChevronRight,
-  Tags, ExternalLink,
+  Tags, ExternalLink, MessageSquare, Download,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import PageHeader from '@/components/common/PageHeader'
@@ -18,6 +18,8 @@ import { useProject, useDeleteProject } from '@/hooks/useProjects'
 import { useDocuments, useUploadDocuments, useDeleteDocument } from '@/hooks/useDocuments'
 import { useChunks, useChunkPreview, useGenerateChunks, useUpdateChunk, useDeleteChunk } from '@/hooks/useChunks'
 import { useGAPairs } from '@/hooks/useGAPairs'
+import { useQuestions } from '@/hooks/useQuestions'
+import { useDatasetItems } from '@/hooks/useDatasetItems'
 import { toast } from '@/lib/toast'
 import { stagger, fadeUp } from '@/lib/animations'
 import type { DocumentOut, ChunkOut, ChunkStrategy, ProcessingStatus } from '@/types/api'
@@ -145,12 +147,12 @@ export default function ProjectDetailPage() {
   const { projectId } = useParams<{ projectId: string }>()
   const navigate = useNavigate()
 
-  const { data: project, isLoading: projLoading, isError: projError, refetch: refetchProject } = useProject(projectId!)
+  const { data: project, isLoading: projLoading, isError: projError, error: projErrorObj, refetch: refetchProject } = useProject(projectId!)
   const deleteProject = useDeleteProject()
   const [showDelete, setShowDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
 
-  const { data: docsData, refetch: refetchDocs } = useDocuments(projectId!)
+  const { data: docsData, isError: docsIsError, error: docsError, refetch: refetchDocs } = useDocuments(projectId!)
   const uploadDocs = useUploadDocuments(projectId!)
   const deleteDoc = useDeleteDocument(projectId!)
   const [isDragOver, setIsDragOver] = useState(false)
@@ -201,8 +203,17 @@ export default function ProjectDetailPage() {
   const parsedDocs = docs.filter(d => d.processing_status === 'parsed')
 
   // GA Pairs data
-  const { data: gaPairsData } = useGAPairs(projectId!, { page: 1, pageSize: 1 })
+  const { data: gaPairsData, isError: gaIsError, error: gaError } = useGAPairs(projectId!, { page: 1, pageSize: 1 })
   const gaPairsCount = gaPairsData?.pagination.total_items ?? 0
+  // Questions data
+  const { data: questionsData, isError: qIsError, error: qError } = useQuestions(projectId!, { page: 1, pageSize: 1 })
+  const questionsCount = questionsData?.pagination.total_items ?? 0
+  // Dataset items data
+  const { data: datasetData, isError: dsIsError, error: dsError } = useDatasetItems(projectId!, { page: 1, pageSize: 1 })
+  const datasetCount = datasetData?.pagination.total_items ?? 0
+
+  const anyError = docsIsError || gaIsError || qIsError || dsIsError
+  const firstError = docsError || gaError || qError || dsError
 
   const toggleDocSelect = (id: string) => setSelectedDocIds(p => p.includes(id) ? p.filter(d => d !== id) : [...p, id])
   const toggleExpandDoc = (docId: string) => setCollapsedDocs(p => { const n = new Set(p); n.has(docId) ? n.delete(docId) : n.add(docId); return n })
@@ -265,7 +276,8 @@ export default function ProjectDetailPage() {
   }
 
   if (projLoading) return <LoadingState />
-  if (projError || !project) return <ErrorState message="Project not found" onRetry={refetchProject} />
+  if (projError || !project) return <ErrorState error={projErrorObj} message={!projErrorObj ? "Project not found" : undefined} onRetry={refetchProject} />
+  if (anyError) return <ErrorState error={firstError} onRetry={refetchProject} />
 
   const progress = project.pipeline_progress
   const progressSteps = [
@@ -273,7 +285,7 @@ export default function ProjectDetailPage() {
     { label: 'Chunk', key: 'chunks' as const },
     { label: 'GA Pairs', key: 'ga_pairs' as const },
     { label: 'Questions', key: 'questions' as const },
-    { label: 'Export', key: 'dataset_items' as const },
+    { label: 'Dataset', key: 'dataset_items' as const },
   ]
 
   return (
@@ -526,6 +538,115 @@ export default function ProjectDetailPage() {
             </Card>
           )}
           <Separator />
+        </motion.div>
+      )}
+
+      {/* Step 4: Questions */}
+      {progress.ga_pairs > 0 && (
+        <motion.div variants={fadeUp} className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="w-6 h-6 rounded-full bg-ink text-white text-xs font-bold flex items-center justify-center">4</div>
+              <h3 className="text-base font-semibold text-ink">Questions</h3>
+              <span className="text-xs text-muted ml-2">{questionsCount} total</span>
+            </div>
+            <Button variant="outline" size="sm" onClick={() => navigate(`/projects/${projectId}/questions`)}>
+              <ExternalLink className="h-3.5 w-3.5 mr-1.5" />
+              View All
+            </Button>
+          </div>
+
+          {questionsCount === 0 ? (
+            <Card className="border-hairline">
+              <CardContent className="p-6 text-center">
+                <MessageSquare className="h-8 w-8 text-muted mx-auto mb-2" />
+                <p className="text-sm font-medium text-ink">Generate Questions</p>
+                <p className="text-xs text-muted mt-1 mb-4">
+                  Create questions from your chunks and GA pairs for your dataset.
+                </p>
+                <Button onClick={() => navigate(`/projects/${projectId}/questions`)}>
+                  <Play className="h-3.5 w-3.5 mr-1.5" />
+                  Generate Questions
+                </Button>
+              </CardContent>
+            </Card>
+          ) : (
+            <Card className="border-hairline">
+              <CardContent className="p-4 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-lg bg-action/10 flex items-center justify-center">
+                    <MessageSquare className="h-5 w-5 text-action" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-ink">{questionsCount} Question{questionsCount !== 1 ? 's' : ''}</p>
+                    <p className="text-xs text-muted">Ready for review and answer generation</p>
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="outline" size="sm" onClick={() => navigate(`/projects/${projectId}/questions`)}>
+                    <Eye className="h-3.5 w-3.5 mr-1.5" />
+                    View
+                  </Button>
+                  <Button size="sm" onClick={() => navigate(`/projects/${projectId}/questions`)}>
+                    <Play className="h-3.5 w-3.5 mr-1.5" />
+                    Generate Questions
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+          <Separator />
+        </motion.div>
+      )}
+
+      {/* Step 5: Dataset Review */}
+      {progress.questions > 0 && (
+        <motion.div variants={fadeUp} className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="w-6 h-6 rounded-full bg-ink text-white text-xs font-bold flex items-center justify-center">5</div>
+              <h3 className="text-base font-semibold text-ink">Dataset</h3>
+              <span className="text-xs text-muted ml-2">{datasetCount} items</span>
+            </div>
+            <Button variant="outline" size="sm" onClick={() => navigate(`/projects/${projectId}/dataset-review`)}>
+              <ExternalLink className="h-3.5 w-3.5 mr-1.5" />
+              Review & Export
+            </Button>
+          </div>
+
+          {datasetCount === 0 ? (
+            <Card className="border-hairline">
+              <CardContent className="p-6 text-center">
+                <Download className="h-8 w-8 text-muted mx-auto mb-2" />
+                <p className="text-sm font-medium text-ink">Generate Answers</p>
+                <p className="text-xs text-muted mt-1 mb-4">
+                  Generate answers for your questions to create dataset items.
+                </p>
+                <Button onClick={() => navigate(`/projects/${projectId}/dataset-review`)}>
+                  <Play className="h-3.5 w-3.5 mr-1.5" />
+                  Generate Answers
+                </Button>
+              </CardContent>
+            </Card>
+          ) : (
+            <Card className="border-hairline">
+              <CardContent className="p-4 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-lg bg-deep-green/10 flex items-center justify-center">
+                    <Download className="h-5 w-5 text-deep-green" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-ink">{datasetCount} Item{datasetCount !== 1 ? 's' : ''}</p>
+                    <p className="text-xs text-muted">Ready for review and export</p>
+                  </div>
+                </div>
+                <Button size="sm" onClick={() => navigate(`/projects/${projectId}/dataset-review`)}>
+                  <Eye className="h-3.5 w-3.5 mr-1.5" />
+                  Review
+                </Button>
+              </CardContent>
+            </Card>
+          )}
         </motion.div>
       )}
 

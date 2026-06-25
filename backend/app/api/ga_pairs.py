@@ -6,11 +6,15 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, get_current_user
 from app.core.exceptions import not_found, bad_request
-from app.models import User
+from app.models import User, GenerationRunType, PromptType
 from app.repositories.ga_pair_repository import GAPairRepository
 from app.repositories.document_repository import DocumentRepository
+from app.repositories.task_repository import TaskRepository
 from app.services.generation.ga_generator import generate_ga_pairs
 from app.services.generation.estimator import estimate_ga_generation
+from app.services.generation.generation_run_service import GenerationRunService
+from app.services.generation.resolver import resolve_llm_config_with_model
+from app.services.prompts.prompt_service import PromptService
 from app.schemas_extended import GAPairCreate, GAPairUpdate, GAPairOut
 from app.schemas import (
     GenerationConfigBase,
@@ -70,8 +74,8 @@ async def generate_ga_pairs_endpoint(
 ):
     """Generate GA pairs for selected documents via LLM.
 
-    Returns 202 Accepted with task_id and generation_run_id immediately.
-    Actual generation runs in the background.
+    Returns 202 Accepted with real task_id and generation_run_id immediately.
+    Actual generation runs in the background. Frontend polls task/{id} for status.
     """
     if not data.document_ids:
         raise bad_request("At least one document_id is required")
@@ -85,16 +89,54 @@ async def generate_ga_pairs_endpoint(
         if doc.processing_status != "parsed":
             raise bad_request(f"Document '{doc.filename}' is not yet parsed (status: {doc.processing_status})")
 
-    # Launch background task — everything happens inside, including run + task creation
+    # Resolve LLM config synchronously to fail fast if no key configured
+    try:
+        resolve_llm_config_with_model(
+            db, project_id, str(current_user.id),
+            model=data.model,
+            llm_key_id=data.llm_key_id,
+            temperature=data.temperature_override or 0.7,
+            max_tokens=data.max_tokens_override or 2048,
+        )
+    except Exception as e:
+        raise bad_request(f"Cannot start generation: {str(e)}", "LLM_CONFIG_FAILED")
+
+    # Create GenerationRun + Task synchronously so frontend gets real IDs
+    total_expected = len(data.document_ids) * data.pairs_per_document
+
+    prompt_svc = PromptService(db)
+    prompt_out = prompt_svc.get_active_prompt(project_id, PromptType.ga)
+
+    run_svc = GenerationRunService(db)
+    run = run_svc.create_run(
+        project_id=project_id,
+        run_type=GenerationRunType.ga_generation,
+        model_name=data.model,
+        prompt_type=PromptType.ga,
+        prompt_version=prompt_out.version,
+        total_items=total_expected,
+    )
+
+    task_repo = TaskRepository(db)
+    task = task_repo.create_task(
+        project_id=project_id,
+        task_type="ga-generation",
+        total_count=len(data.document_ids),
+        generation_run_id=str(run.id),
+    )
+
+    # Launch background task with pre-created run + task
     async def _run_in_background():
         from app.core.database import SessionLocal
         bg_db = SessionLocal()
         try:
-            result = await generate_ga_pairs(
+            await generate_ga_pairs(
                 db=bg_db,
                 project_id=project_id,
                 user_id=str(current_user.id),
                 document_ids=data.document_ids,
+                task_id=str(task.id),
+                generation_run_id=str(run.id),
                 pairs_per_document=data.pairs_per_document,
                 llm_key_id=data.llm_key_id,
                 model=data.model,
@@ -103,18 +145,25 @@ async def generate_ga_pairs_endpoint(
             )
             logger.info(
                 "GA generation complete | task=%s run=%s",
-                result.get("task_id"), result.get("generation_run_id"),
+                str(task.id), str(run.id),
             )
         except Exception as e:
             logger.error("GA generation background task failed: %s", str(e))
+            try:
+                tr = TaskRepository(bg_db)
+                tr.fail_task(str(task.id), str(e))
+                run_svc2 = GenerationRunService(bg_db)
+                run_svc2.fail_run(str(run.id), error_message=str(e))
+            except Exception:
+                pass
         finally:
             bg_db.close()
 
     background_tasks.add_task(_run_in_background)
 
     return TaskAcceptedResponse(
-        task_id="pending",
-        generation_run_id="pending",
+        task_id=str(task.id),
+        generation_run_id=str(run.id),
     )
 
 

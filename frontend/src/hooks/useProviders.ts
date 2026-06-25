@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { providersApi } from '@/api/providers'
-import type { LLMKeyCreate } from '@/types/api'
+import type { LLMKeyCreate, LLMKeyUpdate } from '@/types/api'
 
 interface UseProvidersOptions {
   page?: number
@@ -39,5 +39,15 @@ export function useDeleteProvider() {
 export function useTestProvider() {
   return useMutation({
     mutationFn: ({ id, model }: { id: string; model?: string }) => providersApi.test(id, model),
+  })
+}
+
+export function useUpdateProvider() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: LLMKeyUpdate }) => providersApi.update(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['providers'] })
+    },
   })
 }

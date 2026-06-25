@@ -13,6 +13,8 @@ const ProjectsPage = lazy(() => import('@/features/projects/pages/ProjectsPage')
 const CreateProjectPage = lazy(() => import('@/features/projects/pages/CreateProjectPage'))
 const ProjectDetailPage = lazy(() => import('@/features/projects/pages/ProjectDetailPage'))
 const GAPairsPage = lazy(() => import('@/features/ga-pairs/pages/GAPairsPage'))
+const QuestionsPage = lazy(() => import('@/features/questions/pages/QuestionsPage'))
+const DatasetReviewPage = lazy(() => import('@/features/dataset-review/pages/DatasetReviewPage'))
 const ProvidersPage = lazy(() => import('@/features/providers/pages/ProvidersPage'))
 const NotFoundPage = lazy(() => import('@/pages/NotFoundPage'))
 
@@ -41,6 +43,8 @@ export default function AppRouter() {
             <Route path="/projects/new" element={<SuspenseWrapper><CreateProjectPage /></SuspenseWrapper>} />
             <Route path="/projects/:projectId" element={<SuspenseWrapper><ProjectDetailPage /></SuspenseWrapper>} />
             <Route path="/projects/:projectId/ga-pairs" element={<SuspenseWrapper><GAPairsPage /></SuspenseWrapper>} />
+            <Route path="/projects/:projectId/questions" element={<SuspenseWrapper><QuestionsPage /></SuspenseWrapper>} />
+            <Route path="/projects/:projectId/dataset-review" element={<SuspenseWrapper><DatasetReviewPage /></SuspenseWrapper>} />
             <Route path="/providers" element={<SuspenseWrapper><ProvidersPage /></SuspenseWrapper>} />
           </Route>
 
