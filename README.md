@@ -5,19 +5,21 @@
 ```
 ╔══════════════════════════════════════════════════════════════╗
 ║                                                              ║
-║     ██████╗  ██████╗ ████████╗ █████╗ ███████╗██████╗ ████████╗    ║
-║     ██╔══██╗██╔══██╗╚══██╔══╝██╔══██╗██╔════╝██╔══╝ ╚══██╔══╝    ║
-║     ██║  ██║███████║   ██║   ███████║███████╗█████╗    ██║        ║
-║     ██║  ██║██╔══██║   ██║   ██╔══██║╚════██║██╔══╝    ██║        ║
-║     ██████╔╝██║  ██║   ██║   ██║  ██║███████║███████╗  ██║        ║
-║     ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚══════╝╚══════╝  ╚═╝        ║
+║      ██████╗ ██╗   ██╗██╗ ██████╗██╗  ██╗                   ║
+║     ██╔═══██╗██║   ██║██║██╔════╝██║ ██╔╝                   ║
+║     ██║   ██║██║   ██║██║██║     █████╔╝                    ║
+║     ██║▄▄ ██║██║   ██║██║██║     ██╔═██╗                    ║
+║     ╚██████╔╝╚██████╔╝██║╚██████╗██║  ██╗                   ║
+║      ╚══▀▀═╝  ╚═════╝ ╚═╝ ╚═════╝╚═╝  ╚═╝                   ║
 ║                                                              ║
-║          ███████╗ █████╗  ██████╗████████╗ ██████╗ ██████╗ ██╗   ██╗  ║
-║          ██╔════╝██╔══██╗██╔════╝╚══██╔══╝██╔═══██╗██╔══██╗╚██╗ ██╔╝  ║
-║          █████╗  ███████║██║        ██║   ██║   ██║██████╔╝ ╚████╔╝   ║
-║          ██╔══╝  ██╔══██║██║        ██║   ██║   ██║██╔══██╗  ╚██╔╝    ║
-║          ██║     ██║  ██║╚██████╗   ██║   ╚██████╔╝██║  ██║   ██║     ║
-║          ╚═╝     ╚═╝  ╚═╝ ╚═════╝   ╚═╝    ╚═════╝ ╚═╝  ╚═╝   ╚═╝     ║
+║      ██████╗  █████╗ ████████╗ █████╗ ███████╗███████╗████████╗ ║
+║      ██╔══██╗██╔══██╗╚══██╔══╝██╔══██╗██╔════╝██╔════╝╚══██╔══╝ ║
+║      ██║  ██║███████║   ██║   ███████║███████╗█████╗     ██║    ║
+║      ██║  ██║██╔══██║   ██║   ██╔══██║╚════██║██╔══╝     ██║    ║
+║      ██████╔╝██║  ██║   ██║   ██║  ██║███████║███████╗   ██║    ║
+║      ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚══════╝╚══════╝   ╚═╝    ║
+║                                                              ║
+║                     Q U I C K   D A T A S E T                ║
 ║                                                              ║
 ╚══════════════════════════════════════════════════════════════╝
 ```
@@ -74,13 +76,13 @@
 
 ## 🌐 Project Overview
 
-### What is Dataset Factory?
+### What is Quick Dataset?
 
-Dataset Factory is a **full-stack, multi-user web platform** that transforms raw documents — PDFs, DOCX files, Markdown, and plain text — into clean, reviewed, export-ready fine-tuning datasets for Large Language Models.
+Quick Dataset is a **full-stack, multi-user web platform** that transforms raw documents — PDFs, DOCX files, Markdown, and plain text — into clean, reviewed, export-ready fine-tuning datasets for Large Language Models.
 
 ### What problem does it solve?
 
-Fine-tuning LLMs requires high-quality custom datasets, but turning source material into structured Q&A pairs, MCQs, or classification data is almost entirely manual. Existing tools like EasyDataset proved the pipeline concept but are single-user, self-hosted, and lack cost transparency. Dataset Factory solves this by providing a multi-user, BYOK (Bring Your Own Key) platform with full traceability, cost estimation before every generation step, and human-in-the-loop review at every stage.
+Fine-tuning LLMs requires high-quality custom datasets, but turning source material into structured Q&A pairs, MCQs, or classification data is almost entirely manual. Existing tools like EasyDataset proved the pipeline concept but are single-user, self-hosted, and lack cost transparency. Quick Dataset solves this by providing a multi-user, BYOK (Bring Your Own Key) platform with full traceability, cost estimation before every generation step, and human-in-the-loop review at every stage.
 
 ### Who is it for?
 
@@ -717,7 +719,7 @@ pnpm preview    # Preview production build locally
 
 | Setting | Default | Description |
 |:---|:---|:---|
-| `PROJECT_NAME` | `"Dataset Factory"` | Application display name |
+| `PROJECT_NAME` | `"Quick Dataset"` | Application display name |
 | `DATABASE_URL` | `sqlite:///./test.db` | Database connection (override with env) |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `15` | JWT access token lifetime |
 | `REFRESH_TOKEN_EXPIRE_DAYS` | `30` | JWT refresh token lifetime |
@@ -801,7 +803,7 @@ alembic downgrade -1
 
 ## 🚶 Application Flow
 
-A user's journey through Dataset Factory follows this step-by-step flow:
+A user's journey through Quick Dataset follows this step-by-step flow:
 
 ### Phase 1 — Account Setup
 1. **Register** with username, email, and password (validated: min 8 chars, must include letter + number)
