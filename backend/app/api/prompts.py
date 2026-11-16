@@ -9,7 +9,7 @@ from app.api.deps import get_db, get_current_user
 from app.core.exceptions import not_found, bad_request
 from app.models import User, PromptType as PromptTypeEnum
 from app.services.prompts.prompt_service import PromptService
-from app.services.generation.resolver import resolve_llm_config_with_model
+from app.services.generation.resolver import default_model_for, resolve_llm_config_with_model
 from app.services.llm.provider_factory import ProviderFactory
 from app.schemas_extended import (
     PromptOut,
@@ -176,6 +176,8 @@ async def test_prompt_with_llm(
         )
     except Exception as e:
         raise bad_request(f"Failed to resolve LLM config: {str(e)}")
+    test_model = default_model_for(config.provider)
+    config.model = test_model
 
     # Make the actual LLM call (not using tracked_complete since this is
     # a test, not a generation — but we still track usage)
@@ -188,7 +190,7 @@ async def test_prompt_with_llm(
             project_id=project_id,
             config=config,
             messages=[{"role": "user", "content": rendered}],
-            model="gpt-4o-mini",
+            model=test_model,
             temperature=0.7,
             max_tokens=2048,
             task_id=None,

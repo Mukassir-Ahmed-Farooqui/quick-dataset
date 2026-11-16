@@ -1,10 +1,22 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.exceptions import register_exception_handlers
 from app.api import auth, providers, projects, documents, chunks, tasks, ga_pairs, questions, prompts, search, dataset_items, exports
 
-app = FastAPI(title=settings.PROJECT_NAME)
+from app.services.llm.http_client import close_http_clients
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    # Close the pooled httpx clients shared by the LLM providers.
+    await close_http_clients()
+
+
+app = FastAPI(title=settings.PROJECT_NAME, lifespan=lifespan)
 
 register_exception_handlers(app)
 

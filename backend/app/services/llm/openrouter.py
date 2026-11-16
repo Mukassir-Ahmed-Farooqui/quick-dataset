@@ -2,6 +2,7 @@ import time
 import httpx
 from typing import List, Dict
 from app.services.llm.base import BaseLLMProvider
+from app.services.llm.http_client import get_http_client
 from app.schemas_extended import LLMResponse, ProviderTestResult
 
 class OpenRouterProvider(BaseLLMProvider):
@@ -18,29 +19,29 @@ class OpenRouterProvider(BaseLLMProvider):
         temperature: float = 0.7,
         max_tokens: int = 4096
     ) -> LLMResponse:
-        async with httpx.AsyncClient() as client:
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "http://localhost:8000", # Need a referer for openrouter
-            }
-            payload = {
-                "model": model,
-                "messages": messages,
-                "temperature": temperature,
-                "max_tokens": max_tokens
-            }
+        client = get_http_client()
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "http://localhost:8000", # Need a referer for openrouter
+        }
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens
+        }
             
-            response = await client.post(f"{self.base_url}/chat/completions", json=payload, headers=headers, timeout=60.0)
-            response.raise_for_status()
+        response = await client.post(f"{self.base_url}/chat/completions", json=payload, headers=headers)
+        response.raise_for_status()
             
-            data = response.json()
-            return LLMResponse(
-                content=data["choices"][0]["message"]["content"],
-                prompt_tokens=data.get("usage", {}).get("prompt_tokens", 0),
-                completion_tokens=data.get("usage", {}).get("completion_tokens", 0),
-                total_tokens=data.get("usage", {}).get("total_tokens", 0)
-            )
+        data = response.json()
+        return LLMResponse(
+            content=_message_text(data),
+            prompt_tokens=data.get("usage", {}).get("prompt_tokens", 0),
+            completion_tokens=data.get("usage", {}).get("completion_tokens", 0),
+            total_tokens=data.get("usage", {}).get("total_tokens", 0)
+        )
 
     async def stream(
         self,
@@ -87,3 +88,14 @@ class OpenRouterProvider(BaseLLMProvider):
                 latency_ms=latency_ms,
                 error=str(e)
             )
+
+
+def _message_text(data: dict) -> str:
+    """Final message text; reasoning (if the model returns it separately)
+    is kept as a leading <think> block so chain-of-thought can be captured."""
+    msg = (data.get("choices") or [{}])[0].get("message") or {}
+    content = msg.get("content") or ""
+    reasoning = msg.get("reasoning_content") or msg.get("reasoning")
+    if isinstance(reasoning, str) and reasoning.strip() and "<think>" not in content:
+        content = f"<think>{reasoning.strip()}</think>\n{content}"
+    return content

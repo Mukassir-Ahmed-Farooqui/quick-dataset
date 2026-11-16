@@ -1,37 +1,78 @@
 """
 Answer Generator — generates answers for questions, creating dataset items.
 
-Follows the exact same architecture as ga_generator.py and question_generator.py:
-    resolve_llm_config() → tracked_complete() → GenerationRunService
-    → PromptService → TaskRepository → DatasetItemRepository
+Pipeline (Easy Dataset logic, see lib/services/datasets/index.js):
+    resolve_llm_config() -> snapshot questions/chunks/GA pairs
+    -> LLMRunner (concurrent tracked_complete) per question:
+         answer  ->  [chain of thought: <think> or cot_synthesis call]
+                 ->  [optional LLM judge: evaluation prompt]
+    -> DatasetItem rows + questions marked answered (bulk, per flush)
 
-Supports dataset types:
-- qa: question + answer
-- mcq: question + options + correct_answer
-- classification: text + label
+- Prompts are grounded: chunk content with its section prefix, token-aware
+  truncation, and the genre/audience guidance block when the question was
+  generated for a GA pair. ``{output_format}`` carries the per-dataset-type
+  output instruction (appended when a custom prompt lacks the placeholder).
+- LLM calls run concurrently in worker coroutines that never touch the
+  Session. Every DB write (items, answered flags, usage logs, progress)
+  happens in the single consuming coroutine (``on_result`` / ``on_flush``).
+- MCQ output is validated strictly: the correct answer must map to exactly
+  one option; anything ambiguous or out of range is rejected, never
+  silently replaced by the first option.
+
+Supported dataset types:
+- qa:             {"question", "answer"}
+- mcq:            {"question", "options", "correct_answer"}
+- classification: {"text", "label"}
 """
 
-import json
+from __future__ import annotations
+
 import logging
-from typing import Optional
+import re
+from datetime import datetime
+from typing import Any, Optional
+
 from sqlalchemy.orm import Session, joinedload
 
 from app.models import (
-    DatasetItem, GenerationRunType, PromptType, DatasetType,
     AnswerType,
+    Chunk,
+    CotSource,
+    DatasetItem,
+    DatasetType,
+    GAPair,
+    GenerationRunType,
+    PromptType,
+    Question,
+    TaskType,
 )
-from app.repositories.task_repository import TaskRepository
 from app.repositories.question_repository import QuestionRepository
-from app.services.generation.resolver import resolve_llm_config_with_model
+from app.repositories.task_repository import TaskRepository
+from app.services.generation.context import (
+    build_chunk_context,
+    ga_values,
+    render_ga_answer_block,
+    render_prompt,
+)
 from app.services.generation.generation_run_service import GenerationRunService
-from app.services.llm.tracked_call import tracked_complete
+from app.services.generation.json_utils import extract_json, split_think
+from app.services.generation.llm_runner import LLMRunner
+from app.services.generation.resolver import default_model_for, resolve_llm_config_with_model
 from app.services.prompts.prompt_service import PromptService
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "gpt-4o-mini"
-MAX_RETRIES = 2
+DEFAULT_TEMPERATURE = 0.3   # answers should be faithful, not creative
+JUDGE_TEMPERATURE = 0.0
+JUDGE_SCALE = 5.0           # the default evaluation prompt scores 0-5
+PARSE_RETRIES = 1           # re-ask once when the output is unusable
+MAX_CONTEXT_TOKENS = 6000   # token-aware cap on chunk text sent to the LLM
+MAX_ERROR_LOG = 50
+MAX_RETRIES = 2             # kept for backward compatibility (unused; LLMRunner retries)
 
+
+# ── Repository (used by api/dataset_items.py and api/exports.py) ─────
 
 class DatasetItemRepository:
     """Simple repository for dataset_items operations."""
@@ -47,8 +88,6 @@ class DatasetItemRepository:
         return items
 
     def bulk_delete(self, project_id: str, ids: list[str]) -> int:
-        from datetime import datetime
-        from app.models import DatasetItem
         count = (
             self.db.query(DatasetItem)
             .filter(
@@ -62,7 +101,6 @@ class DatasetItemRepository:
         return count
 
     def bulk_confirm(self, project_id: str, ids: list[str], confirmed: bool) -> int:
-        from app.models import DatasetItem
         count = (
             self.db.query(DatasetItem)
             .filter(
@@ -74,6 +112,18 @@ class DatasetItemRepository:
         )
         self.db.commit()
         return count
+
+    def _filtered(self, q, project_id, dataset_type, confirmed, min_score, generation_run_id):
+        q = q.filter(DatasetItem.project_id == project_id, DatasetItem.deleted_at.is_(None))
+        if dataset_type:
+            q = q.filter(DatasetItem.dataset_type == dataset_type)
+        if confirmed is not None:
+            q = q.filter(DatasetItem.confirmed == confirmed)
+        if min_score is not None:
+            q = q.filter(DatasetItem.score >= min_score)
+        if generation_run_id:
+            q = q.filter(DatasetItem.generation_run_id == generation_run_id)
+        return q
 
     def list_items(
         self,
@@ -87,22 +137,11 @@ class DatasetItemRepository:
         skip: int = 0,
         limit: int = 50,
     ) -> list[DatasetItem]:
-        from app.models import DatasetItem
         q = self.db.query(DatasetItem).options(
             joinedload(DatasetItem.source_document),
-            joinedload(DatasetItem.source_chunk)
-        ).filter(
-            DatasetItem.project_id == project_id,
-            DatasetItem.deleted_at.is_(None),
+            joinedload(DatasetItem.source_chunk),
         )
-        if dataset_type:
-            q = q.filter(DatasetItem.dataset_type == dataset_type)
-        if confirmed is not None:
-            q = q.filter(DatasetItem.confirmed == confirmed)
-        if min_score is not None:
-            q = q.filter(DatasetItem.score >= min_score)
-        if generation_run_id:
-            q = q.filter(DatasetItem.generation_run_id == generation_run_id)
+        q = self._filtered(q, project_id, dataset_type, confirmed, min_score, generation_run_id)
         return q.order_by(DatasetItem.created_at.desc()).offset(skip).limit(limit).all()
 
     def count_items(
@@ -115,23 +154,11 @@ class DatasetItemRepository:
         generation_run_id: Optional[str] = None,
     ) -> int:
         from sqlalchemy import func
-        from app.models import DatasetItem
-        q = self.db.query(func.count(DatasetItem.id)).filter(
-            DatasetItem.project_id == project_id,
-            DatasetItem.deleted_at.is_(None),
-        )
-        if dataset_type:
-            q = q.filter(DatasetItem.dataset_type == dataset_type)
-        if confirmed is not None:
-            q = q.filter(DatasetItem.confirmed == confirmed)
-        if min_score is not None:
-            q = q.filter(DatasetItem.score >= min_score)
-        if generation_run_id:
-            q = q.filter(DatasetItem.generation_run_id == generation_run_id)
+        q = self.db.query(func.count(DatasetItem.id))
+        q = self._filtered(q, project_id, dataset_type, confirmed, min_score, generation_run_id)
         return q.scalar() or 0
 
     def get_item(self, project_id: str, item_id: str) -> Optional[DatasetItem]:
-        from app.models import DatasetItem
         return (
             self.db.query(DatasetItem)
             .filter(
@@ -142,12 +169,7 @@ class DatasetItemRepository:
             .first()
         )
 
-    def update_item(
-        self,
-        project_id: str,
-        item_id: str,
-        **kwargs,
-    ) -> Optional[DatasetItem]:
+    def update_item(self, project_id: str, item_id: str, **kwargs) -> Optional[DatasetItem]:
         q = self.get_item(project_id, item_id)
         if not q:
             return None
@@ -165,18 +187,367 @@ class DatasetItemRepository:
         min_score: Optional[float] = None,
         generation_run_id: Optional[str] = None,
     ) -> list[DatasetItem]:
-        q = self.db.query(DatasetItem).filter(
-            DatasetItem.project_id == project_id,
-            DatasetItem.deleted_at.is_(None),
-        )
-        if confirmed is not None:
-            q = q.filter(DatasetItem.confirmed == confirmed)
-        if min_score is not None:
-            q = q.filter(DatasetItem.score >= min_score)
-        if generation_run_id:
-            q = q.filter(DatasetItem.generation_run_id == generation_run_id)
+        q = self._filtered(self.db.query(DatasetItem), project_id, None, confirmed, min_score, generation_run_id)
         return q.order_by(DatasetItem.created_at.asc()).all()
 
+
+# ── Output-format instructions ({output_format}) ─────────────────────
+
+OUTPUT_FORMATS: dict[DatasetType, str] = {
+    DatasetType.qa: (
+        "6. Output only the final answer text in plain prose (lists are fine). "
+        "No preface, no title, no JSON, no markdown headings."
+    ),
+    DatasetType.mcq: (
+        "6. This is a multiple-choice item. Write exactly 4 answer options for the question: "
+        "one correct option fully supported by the reference content and three plausible but "
+        "clearly incorrect distractors of similar length and style. Only one option may be correct.\n"
+        "7. Return ONLY a JSON object, no markdown fences or other text:\n"
+        '{"options": ["A. ...", "B. ...", "C. ...", "D. ..."], "correct_answer": "B", '
+        '"explanation": "One sentence on why B is correct, based on the reference content."}\n'
+        '"correct_answer" is the letter of the correct option.'
+    ),
+    DatasetType.classification: (
+        "6. This is a classification item: assign the text given as the Question a short category "
+        "label (1-5 words) that is supported by the reference content.\n"
+        '7. Return ONLY a JSON object, no markdown fences or other text: {"label": "..."}'
+    ),
+}
+
+
+def output_format_for(dataset_type: DatasetType) -> str:
+    return OUTPUT_FORMATS.get(dataset_type, "")
+
+
+def build_answer_prompt(
+    template: str,
+    *,
+    question: str,
+    chunk_text: str,
+    chunk_metadata: Optional[dict],
+    ga_pair: Optional[dict],
+    dataset_type: DatasetType,
+    max_context_tokens: int = MAX_CONTEXT_TOKENS,
+) -> str:
+    """Render the answer prompt for one question."""
+    content = build_chunk_context(chunk_text, chunk_metadata, max_tokens=max_context_tokens)
+    genre, audience = ga_values(ga_pair)
+    ga_block = render_ga_answer_block(genre, audience)
+    fmt = output_format_for(dataset_type)
+    prompt = render_prompt(template, {
+        "content": content,
+        "text": content,
+        "question": question,
+        "ga_prompt": ga_block,
+        "gaPrompt": ga_block,
+        "templatePrompt": "",
+        "output_format": fmt,
+        "outputFormatPrompt": fmt,
+    })
+    if fmt and "output_format" not in template and "outputFormatPrompt" not in template:
+        # Custom prompt without the placeholder: the format instruction is
+        # essential for mcq/classification parsing, so append it.
+        prompt = prompt.rstrip() + "\n\n## Output Format:\n" + fmt + "\n"
+    return prompt
+
+
+# ── Markdown cleanup ─────────────────────────────────────────────────
+
+_FENCE_BLOCK_RE = re.compile(r"(```[\s\S]*?```|~~~[\s\S]*?~~~)")
+_INLINE_CODE_RE = re.compile(r"(`[^`\n]+`)")
+_HEADER_RE = re.compile(r"^(#{1,6})\s+", flags=re.MULTILINE)
+_BULLET_RE = re.compile(r"^[\-\*\+]\s+", flags=re.MULTILINE)
+# Emphasis markers only when they wrap text and are not part of a word, so
+# snake_case_names, 2*3*4 and file_name.py survive intact.
+_BOLD_STAR_RE = re.compile(r"(?<![\w*])\*\*(?=\S)(.+?)(?<=\S)\*\*(?![\w*])")
+# ``__x__`` is only bold when it is not a bare identifier (``__init__``).
+_BOLD_UNDER_RE = re.compile(r"(?<![\w_])__(?=\S)(?!\w+__(?![\w_]))(.+?)(?<=\S)__(?![\w_])")
+_ITALIC_STAR_RE = re.compile(r"(?<![\w*])\*(?=[^\s*])([^*\n]+?)(?<=[^\s*])\*(?![\w*])")
+_ITALIC_UNDER_RE = re.compile(r"(?<![\w_])_(?=[^\s_])([^_\n]+?)(?<=[^\s_])_(?![\w_])")
+
+
+def _clean_prose(text: str) -> str:
+    # Protect inline code spans.
+    parts = _INLINE_CODE_RE.split(text)
+    for i in range(0, len(parts), 2):
+        seg = parts[i]
+        seg = _HEADER_RE.sub("", seg)
+        seg = _BOLD_STAR_RE.sub(r"\1", seg)
+        seg = _BOLD_UNDER_RE.sub(r"\1", seg)
+        seg = _BULLET_RE.sub("", seg)
+        seg = _ITALIC_STAR_RE.sub(r"\1", seg)
+        seg = _ITALIC_UNDER_RE.sub(r"\1", seg)
+        parts[i] = seg
+    return "".join(parts)
+
+
+def _clean_markdown(text: str) -> str:
+    """Strip markdown headers, bullets and emphasis markers without touching
+    code blocks, inline code or identifiers like ``snake_case``."""
+    if not text:
+        return ""
+    pieces = _FENCE_BLOCK_RE.split(text)
+    for i in range(0, len(pieces), 2):
+        pieces[i] = _clean_prose(pieces[i])
+    out = "".join(pieces)
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return out.strip()
+
+
+# ── Payload parsing / validation ─────────────────────────────────────
+
+class PayloadError(ValueError):
+    """The LLM output could not be turned into a valid payload."""
+
+
+_OPTION_LABEL_RE = re.compile(r"^\s*\(?([A-Za-z])\s*[\.\):：]\s+")
+_LETTER_ONLY_RE = re.compile(
+    r"^\s*(?:(?:the\s+)?(?:correct\s+)?(?:option|answer|choice)\s*(?:is)?\s*[:：]?\s*)?"
+    r"\(?([A-Za-z])\)?\s*[\.\):]?\s*$",
+    flags=re.IGNORECASE,
+)
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"\s+", " ", str(s)).strip().strip(".").strip().casefold()
+
+
+def _normalize_options(raw: Any) -> list[str]:
+    if isinstance(raw, dict):
+        items = [raw[k] for k in sorted(raw, key=lambda k: str(k))]
+    elif isinstance(raw, list):
+        items = raw
+    else:
+        raise PayloadError("MCQ output has no options list")
+    options: list[str] = []
+    for o in items:
+        if isinstance(o, dict):
+            o = o.get("text") or o.get("option") or o.get("content")
+        if not isinstance(o, (str, int, float)) or isinstance(o, bool):
+            raise PayloadError("MCQ option is not text")
+        options.append(str(o).strip())
+    # Strip "A. " / "B) " / "(C) " labels only when every option carries the
+    # expected sequential label.
+    labels = [_OPTION_LABEL_RE.match(o) for o in options]
+    if options and all(
+        m and m.group(1).upper() == chr(ord("A") + i) for i, m in enumerate(labels)
+    ):
+        options = [o[m.end():].strip() for o, m in zip(options, labels)]
+    if len(options) < 2:
+        raise PayloadError("MCQ output needs at least 2 options")
+    if any(not o for o in options):
+        raise PayloadError("MCQ output has an empty option")
+    if len({_norm(o) for o in options}) != len(options):
+        raise PayloadError("MCQ output has duplicate options")
+    return options
+
+
+def _answer_index(value: Any, options: list[str]) -> int:
+    """Map one correct-answer field to an option index, or raise."""
+    n = len(options)
+    if isinstance(value, bool):
+        raise PayloadError("MCQ correct answer is not a valid option")
+    if isinstance(value, int):
+        if 0 <= value < n:
+            return value
+        raise PayloadError(f"MCQ correct answer index {value} is out of range")
+    if isinstance(value, list):
+        if len(value) != 1:
+            raise PayloadError("MCQ output must have exactly one correct answer")
+        value = value[0]
+    if not isinstance(value, str) or not value.strip():
+        raise PayloadError("MCQ output has no correct answer")
+    text = value.strip()
+    target = _norm(text)
+    exact = [i for i, o in enumerate(options) if _norm(o) == target]
+    if len(exact) == 1:
+        return exact[0]
+    m = _LETTER_ONLY_RE.match(text)
+    if m:
+        idx = ord(m.group(1).upper()) - ord("A")
+        if 0 <= idx < n:
+            return idx
+        raise PayloadError(f"MCQ correct answer letter {m.group(1).upper()} is out of range")
+    m = _OPTION_LABEL_RE.match(text)
+    if m:
+        idx = ord(m.group(1).upper()) - ord("A")
+        rest = _norm(text[m.end():])
+        if 0 <= idx < n and _norm(options[idx]) == rest:
+            return idx
+        raise PayloadError("MCQ correct answer letter and text do not match the same option")
+    raise PayloadError("MCQ correct answer does not match any option")
+
+
+def parse_mcq(raw_output: str) -> tuple[list[str], int, dict]:
+    """Parse and strictly validate MCQ output. Returns (options, index, extra)."""
+    data = extract_json(raw_output, expect=dict)
+    if not isinstance(data, dict):
+        raise PayloadError("MCQ output is not a JSON object")
+    options = _normalize_options(data.get("options", data.get("choices")))
+    fields = [
+        data[k] for k in (
+            "correct_answer", "answer", "correct_option", "correct_letter",
+            "answer_letter", "correct_index",
+        )
+        if k in data and data[k] not in (None, "")
+    ]
+    if not fields:
+        raise PayloadError("MCQ output has no correct answer")
+    indices = {_answer_index(v, options) for v in fields}
+    if len(indices) != 1:
+        raise PayloadError("MCQ output gives conflicting correct answers")
+    extra = {}
+    if isinstance(data.get("explanation"), str) and data["explanation"].strip():
+        extra["explanation"] = data["explanation"].strip()
+    return options, indices.pop(), extra
+
+
+def _parse_label(text: str) -> str:
+    data = extract_json(text, expect=dict) if "{" in text else None
+    if isinstance(data, dict):
+        label = data.get("label") or data.get("category") or data.get("class")
+        if isinstance(label, str) and label.strip():
+            return label.strip()[:200]
+        raise PayloadError("Classification output has no label")
+    if data is not None or text.strip().startswith("{"):
+        raise PayloadError("Classification output is not a valid JSON object")
+    cleaned = _clean_markdown(text)
+    if not cleaned:
+        raise PayloadError("Classification output is empty")
+    first = cleaned.split("\n", 1)[0].strip()
+    m = re.match(r"^\s*(?:label|category|class)\s*[:：]\s*(.+)$", first, flags=re.IGNORECASE)
+    label = (m.group(1) if m else first).strip().strip("\"'").strip()
+    if not label:
+        raise PayloadError("Classification output is empty")
+    return label[:200]
+
+
+def _parse_qa(text: str) -> str:
+    stripped = text.strip()
+    if stripped.startswith("{") or stripped.startswith("```"):
+        data = extract_json(stripped, expect=dict)
+        if isinstance(data, dict) and isinstance(data.get("answer"), str):
+            stripped = data["answer"]
+    answer = _clean_markdown(stripped)
+    if not answer:
+        raise PayloadError("Empty answer")
+    return answer
+
+
+def build_payload(dataset_type: DatasetType, raw_output: str, question_text: str) -> tuple[dict, dict]:
+    """Build ``(payload, extra_metadata)`` for a dataset type. Raises PayloadError."""
+    answer_text, _think = split_think(raw_output or "")
+    if dataset_type == DatasetType.qa:
+        return {"question": question_text, "answer": _parse_qa(answer_text)}, {}
+    if dataset_type == DatasetType.mcq:
+        options, idx, extra = parse_mcq(answer_text)
+        extra["correct_option"] = chr(ord("A") + idx)
+        return {"question": question_text, "options": options, "correct_answer": options[idx]}, extra
+    if dataset_type == DatasetType.classification:
+        return {"text": question_text, "label": _parse_label(answer_text)}, {}
+    raise PayloadError(f"Dataset type '{getattr(dataset_type, 'value', dataset_type)}' is not supported by answer generation")
+
+
+def _build_payload(dataset_type: DatasetType, raw_output: str, question_text: str) -> Optional[dict]:
+    """Backward-compatible wrapper: payload or None when invalid."""
+    try:
+        return build_payload(dataset_type, raw_output, question_text)[0]
+    except PayloadError:
+        return None
+
+
+def answer_text_of(dataset_type: DatasetType, payload: dict) -> str:
+    """The answer as plain text, for CoT synthesis and the judge."""
+    if dataset_type == DatasetType.mcq:
+        opts = "\n".join(f"{chr(ord('A') + i)}. {o}" for i, o in enumerate(payload["options"]))
+        idx = payload["options"].index(payload["correct_answer"])
+        return f"Options:\n{opts}\nCorrect answer: {chr(ord('A') + idx)}. {payload['correct_answer']}"
+    if dataset_type == DatasetType.classification:
+        return payload.get("label", "")
+    return payload.get("answer", "")
+
+
+# ── CoT + judge parsing ──────────────────────────────────────────────
+
+_COT_PREFACE_RE = re.compile(
+    r"^\s*(?:#+\s*)?(?:optimi[sz]ed\s+)?(?:chain[\s-]of[\s-]thought|reasoning|cot)\s*[:：]?\s*\n?",
+    flags=re.IGNORECASE,
+)
+
+
+def clean_cot(raw: str) -> str:
+    answer, think = split_think(raw or "")
+    text = answer or think
+    text = _COT_PREFACE_RE.sub("", text, count=1)
+    return text.strip()
+
+
+_SCORE_KEYS = ("score", "overall_score", "final_score", "rating", "overall")
+_EVAL_KEYS = ("evaluation", "reason", "explanation", "feedback", "comment")
+_NUM = r"(-?[0-9]+(?:\.[0-9]+)?)"
+_SCORE_FIELD_RE = re.compile(r"score\W{0,3}[:=]\s*\"?" + _NUM + r"(?:\s*/\s*" + _NUM + r")?", re.IGNORECASE)
+_RATIO_RE = re.compile(_NUM + r"\s*(?:/|out of)\s*(5|10|100)\b", re.IGNORECASE)
+
+
+def _normalize_score(value: float, denominator: Optional[float], scale: float) -> Optional[float]:
+    if denominator:
+        norm = value / denominator
+    elif value <= scale:
+        norm = value / scale
+    elif value <= 10:
+        norm = value / 10
+    elif value <= 100:
+        norm = value / 100
+    else:
+        return None
+    return round(max(0.0, min(1.0, norm)), 4)
+
+
+def parse_judge_output(raw: str, scale: float = JUDGE_SCALE) -> tuple[Optional[float], Optional[float], str]:
+    """Parse an evaluation response.
+
+    Returns ``(normalized_0_1, raw_score, evaluation_text)``; the scores are
+    ``None`` when no score could be found.
+    """
+    body, _ = split_think(raw or "")
+    data = extract_json(body, expect=dict)
+    raw_score: Optional[float] = None
+    denominator: Optional[float] = None
+    evaluation = ""
+    if isinstance(data, dict):
+        for k in _EVAL_KEYS:
+            if isinstance(data.get(k), str):
+                evaluation = data[k].strip()
+                break
+        for k in _SCORE_KEYS:
+            v = data.get(k)
+            if isinstance(v, bool) or v is None:
+                continue
+            if isinstance(v, (int, float)):
+                raw_score = float(v)
+            elif isinstance(v, str):
+                m = re.match(r"\s*" + _NUM + r"(?:\s*/\s*" + _NUM + r")?", v)
+                if m:
+                    raw_score = float(m.group(1))
+                    denominator = float(m.group(2)) if m.group(2) else None
+            if raw_score is not None:
+                break
+        for k in ("max_score", "scale", "out_of"):
+            if denominator is None and isinstance(data.get(k), (int, float)) and not isinstance(data.get(k), bool) and data[k] > 0:
+                denominator = float(data[k])
+    if raw_score is None:
+        m = _SCORE_FIELD_RE.search(body) or _RATIO_RE.search(body)
+        if m:
+            raw_score = float(m.group(1))
+            denominator = float(m.group(2)) if m.lastindex and m.lastindex >= 2 and m.group(2) else None
+    if not evaluation:
+        evaluation = body.strip()[:1000] if not isinstance(data, dict) else ""
+    if raw_score is None or raw_score < 0:
+        return None, raw_score, evaluation
+    return _normalize_score(raw_score, denominator, scale), raw_score, evaluation
+
+
+# ── Entry point ──────────────────────────────────────────────────────
 
 async def generate_answers(
     db: Session,
@@ -186,65 +557,107 @@ async def generate_answers(
     *,
     dataset_type: DatasetType = DatasetType.qa,
     llm_key_id: Optional[str] = None,
-    model: str = DEFAULT_MODEL,
-    temperature: float = 0.7,
+    model: Optional[str] = DEFAULT_MODEL,
+    temperature: Optional[float] = None,
     max_tokens: int = 2048,
     existing_run_id: Optional[str] = None,
     existing_task_id: Optional[str] = None,
+    include_cot: bool = False,
+    evaluate: bool = False,
+    min_quality_score: Optional[float] = None,
+    concurrency: Optional[int] = None,
+    max_context_tokens: int = MAX_CONTEXT_TOKENS,
+    seed: Optional[int] = None,
 ) -> dict:
-    """Generate answers for the specified questions.
-
-    This is the background task entry point. Manages full lifecycle:
-    1. Loads questions + their chunks
-    2. Creates GenerationRun + Task (unless existing_run_id/task_id provided)
-    3. Loads prompt
-    4. Resolves LLM config
-    5. For each question, calls LLM to generate answer
-    6. Validates output (MCQ: correct_answer ∈ options)
-    7. Creates DatasetItem rows
-    8. Completes/fails run and task
+    """Generate answers for the specified questions (background task entry point).
 
     Args:
-        existing_run_id: If provided, use this pre-created run instead of creating a new one.
-        existing_task_id: If provided, use this pre-created task instead of creating a new one.
+        model: Model name; ``None`` picks the provider's default model.
+        temperature: Sampling temperature; ``None`` means 0.3. ``0.0`` is honoured.
+        existing_run_id / existing_task_id: Use pre-created run/task rows.
+        include_cot: Store a chain of thought (from ``<think>`` when the model
+            emits one, otherwise one extra cot_synthesis call).
+        evaluate: Score each item with the evaluation prompt (one extra call).
+            The score is stored normalized to 0-1 in ``DatasetItem.score``.
+        min_quality_score: With ``evaluate``, items scoring below this are kept
+            but flagged ``item_metadata["below_threshold"] = True``.
+        concurrency: Max concurrent LLM calls (default ``GENERATION_CONCURRENCY``).
 
     Returns:
-        dict with task_id and generation_run_id.
+        dict with task_id, generation_run_id, created and errors counts.
     """
+    if temperature is None:
+        temperature = DEFAULT_TEMPERATURE
     question_repo = QuestionRepository(db)
-    item_repo = DatasetItemRepository(db)
     task_repo = TaskRepository(db)
     run_svc = GenerationRunService(db)
     prompt_svc = PromptService(db)
 
-    # 1. Load questions
-    questions = question_repo.get_questions_by_ids(project_id, question_ids)
-    if not questions:
+    # 1. Load questions (request order) and snapshot everything the workers
+    #    need into plain dicts — workers must never touch ORM objects.
+    rows = question_repo.get_questions_by_ids(project_id, question_ids)
+    if not rows:
         raise ValueError("No valid questions found")
+    by_id = {str(q.id): q for q in rows}
+    ordered = [by_id[str(qid)] for qid in dict.fromkeys(question_ids) if str(qid) in by_id]
+    questions = [
+        {
+            "id": str(q.id),
+            "question": q.question,
+            "chunk_id": str(q.chunk_id) if q.chunk_id else None,
+            "ga_pair_id": str(q.ga_pair_id) if q.ga_pair_id else None,
+        }
+        for q in ordered
+    ]
 
-    logger.info(
-        "Answer generation starting | project=%s questions=%d type=%s",
-        project_id, len(questions), dataset_type.value,
-    )
+    chunk_ids = list({q["chunk_id"] for q in questions if q["chunk_id"]})
+    chunks: dict[str, dict] = {}
+    if chunk_ids:
+        for c in db.query(Chunk).filter(Chunk.project_id == project_id, Chunk.id.in_(chunk_ids)).all():
+            chunks[str(c.id)] = {
+                "id": str(c.id),
+                "document_id": str(c.document_id) if c.document_id else None,
+                "content": c.content or "",
+                "metadata": c.chunk_metadata if isinstance(c.chunk_metadata, dict) else None,
+            }
 
-    # 2. Load prompt
+    ga_ids = list({q["ga_pair_id"] for q in questions if q["ga_pair_id"]})
+    ga_pairs: dict[str, dict] = {}
+    if ga_ids:
+        for p in db.query(GAPair).filter(GAPair.project_id == project_id, GAPair.id.in_(ga_ids)).all():
+            ga_pairs[str(p.id)] = {
+                "genre_title": p.genre_title,
+                "genre_description": p.genre_description,
+                "audience_title": p.audience_title,
+                "audience_description": p.audience_description,
+            }
+
+    # 2. Prompts
     prompt_out = prompt_svc.get_active_prompt(project_id, PromptType.answer)
-    prompt_template = prompt_out.content
+    answer_template = prompt_out.content
     prompt_version = prompt_out.version
+    cot_template = prompt_svc.get_active_prompt(project_id, PromptType.cot_synthesis).content if include_cot else ""
+    eval_template = prompt_svc.get_active_prompt(project_id, PromptType.evaluation).content if evaluate else ""
 
-    # 3. Resolve LLM config
+    # 3. LLM config
     config = resolve_llm_config_with_model(
         db, project_id, user_id,
-        model=model,
+        model=model or "",
         llm_key_id=llm_key_id,
         temperature=temperature,
         max_tokens=max_tokens,
     )
+    model = model or default_model_for(getattr(config, "provider", None))
+    config.model = model
 
-    # 4. Create or use existing generation run
+    logger.info(
+        "Answer generation starting | project=%s questions=%d type=%s model=%s cot=%s evaluate=%s",
+        project_id, len(questions), dataset_type.value, model, include_cot, evaluate,
+    )
+
+    # 4. Run + task lifecycle
     if existing_run_id:
-        run = run_svc.get_run(existing_run_id)
-        if not run:
+        if not run_svc.get_run(existing_run_id):
             raise ValueError(f"Pre-created run {existing_run_id} not found")
         run_svc.start_run(existing_run_id)
         generation_run_id = existing_run_id
@@ -260,17 +673,15 @@ async def generate_answers(
         )
         generation_run_id = str(run.id)
 
-    # 5. Create or use existing task
     if existing_task_id:
-        task = task_repo.get_task(existing_task_id)
-        if not task:
+        if not task_repo.get_task(existing_task_id):
             raise ValueError(f"Pre-created task {existing_task_id} not found")
         task_repo.start_task(existing_task_id)
         task_id = existing_task_id
     else:
         task = task_repo.create_task(
             project_id=project_id,
-            task_type="answer-generation",
+            task_type=TaskType.answer_generation,
             total_count=len(questions),
             generation_run_id=generation_run_id,
         )
@@ -278,266 +689,193 @@ async def generate_answers(
         run_svc.start_run(generation_run_id)
         task_id = str(task.id)
 
-    # 6. Generate answers
-    all_items: list[DatasetItem] = []
+    runner = LLMRunner(db, project_id, config, model, task_id=task_id, concurrency=concurrency, seed=seed)
     errors: list[dict] = []
-    answered_question_ids: list[str] = []
+    pending: list[DatasetItem] = []
+    pending_qids: list[str] = []
+    created = 0
     processed = 0
+    cancelled = False
+    answer_type = AnswerType.label if dataset_type == DatasetType.classification else AnswerType.text
+    has_cot_column = hasattr(DatasetItem, "cot")
 
-    import time
-    from datetime import datetime
+    async def worker(q: dict) -> dict:
+        chunk = chunks.get(q["chunk_id"]) if q["chunk_id"] else None
+        chunk_text = chunk["content"] if chunk else "No context available."
+        chunk_meta = chunk["metadata"] if chunk else None
+        prompt = build_answer_prompt(
+            answer_template,
+            question=q["question"],
+            chunk_text=chunk_text,
+            chunk_metadata=chunk_meta,
+            ga_pair=ga_pairs.get(q["ga_pair_id"]) if q["ga_pair_id"] else None,
+            dataset_type=dataset_type,
+            max_context_tokens=max_context_tokens,
+        )
+
+        payload: Optional[dict] = None
+        extra: dict = {}
+        raw = ""
+        last_err: Optional[PayloadError] = None
+        for _ in range(PARSE_RETRIES + 1):
+            raw = await runner.complete(prompt, temperature=temperature, max_tokens=max_tokens)
+            try:
+                payload, extra = build_payload(dataset_type, raw, q["question"])
+                break
+            except PayloadError as e:
+                last_err = e
+        if payload is None:
+            raise last_err or PayloadError("Could not parse valid output from LLM")
+
+        meta: dict[str, Any] = {"model": model, "generation_temperature": temperature, **extra}
+        result: dict[str, Any] = {"payload": payload, "metadata": meta, "chunk": chunk,
+                                  "cot": None, "cot_source": CotSource.none, "score": None,
+                                  "ai_evaluation": None}
+        context = build_chunk_context(chunk_text, chunk_meta, max_tokens=max_context_tokens)
+        answer_text = answer_text_of(dataset_type, payload)
+
+        if include_cot:
+            _, think = split_think(raw)
+            if think:
+                result["cot"], result["cot_source"] = think, CotSource.generated
+                meta["cot_origin"] = "think"
+            else:
+                try:
+                    cot_raw = await runner.complete(
+                        render_prompt(cot_template, {"content": context, "text": context,
+                                                     "question": q["question"], "answer": answer_text}),
+                        temperature=temperature, max_tokens=max_tokens,
+                    )
+                    cot = clean_cot(cot_raw)
+                    if cot:
+                        result["cot"], result["cot_source"] = cot, CotSource.generated
+                        meta["cot_origin"] = "synthesized"
+                    else:
+                        result["cot_source"] = CotSource.failed
+                        meta["cot_error"] = "empty chain of thought"
+                except Exception as e:  # CoT is a bonus; keep the answer
+                    result["cot_source"] = CotSource.failed
+                    meta["cot_error"] = str(e)[:500]
+            if result["cot"]:
+                payload["cot"] = result["cot"]
+
+        if evaluate:
+            try:
+                judge_raw = await runner.complete(
+                    render_prompt(eval_template, {"content": context, "text": context,
+                                                  "question": q["question"], "answer": answer_text}),
+                    temperature=JUDGE_TEMPERATURE, max_tokens=min(max_tokens, 1024),
+                )
+                score, raw_score, evaluation = parse_judge_output(judge_raw)
+                meta["evaluation"] = {"raw_output": judge_raw[:4000], "raw_score": raw_score, "scale": JUDGE_SCALE}
+                if score is None:
+                    meta["evaluation_error"] = "no score in judge output"
+                else:
+                    result["score"] = score
+                    if min_quality_score is not None:
+                        meta["below_threshold"] = score < min_quality_score
+                result["ai_evaluation"] = evaluation or None
+            except Exception as e:
+                meta["evaluation_error"] = str(e)[:500]
+        return result
+
+    def on_result(q: dict, result: Optional[dict], error: Optional[BaseException]) -> None:
+        nonlocal processed
+        processed += 1
+        if error is not None:
+            kind = "Invalid LLM output" if isinstance(error, PayloadError) else "LLM call failed"
+            errors.append({"item_id": q["id"], "message": f"{kind}: {error}"})
+            return
+        chunk = result["chunk"]
+        item = DatasetItem(
+            project_id=project_id,
+            question_id=q["id"],
+            generation_run_id=generation_run_id,
+            source_document_id=chunk["document_id"] if chunk else None,
+            source_chunk_id=chunk["id"] if chunk else None,
+            source_ga_pair_id=q["ga_pair_id"],
+            dataset_type=dataset_type,
+            payload=result["payload"],
+            item_metadata=result["metadata"],
+            answer_type=answer_type,
+            score=result["score"],
+            ai_evaluation=result["ai_evaluation"],
+        )
+        if has_cot_column:
+            item.cot = result["cot"]
+            item.cot_source = result["cot_source"]
+        pending.append(item)
+        pending_qids.append(q["id"])
+
+    def on_flush(n_done: int) -> bool:
+        nonlocal created
+        if pending:
+            db.add_all(pending)
+            db.query(Question).filter(
+                Question.id.in_(list(pending_qids)),
+                Question.project_id == project_id,
+            ).update({"answered": True, "reviewed_at": datetime.utcnow()}, synchronize_session=False)
+            created += len(pending)
+            pending.clear()
+            pending_qids.clear()
+        db.commit()
+        if n_done:
+            task_repo.update_progress(task_id, completed_increment=n_done)
+        t = task_repo.get_task(task_id)
+        return bool(t is not None and getattr(t, "cancel_requested", False))
 
     try:
-        for q_item in questions:
-            q_start = time.time()
-            logger.info("Question %s START at %s", q_item.id, datetime.utcnow().isoformat())
-            # Load chunk content for context
-            from app.repositories.chunk_repository import ChunkRepository
-            chunk_repo = ChunkRepository(db)
-            chunk = chunk_repo.get_chunk(project_id, q_item.chunk_id)
-            content = chunk.content[:6000] if chunk else "No context available."
+        if dataset_type not in OUTPUT_FORMATS:
+            raise ValueError(f"Dataset type '{dataset_type.value}' is not supported by answer generation")
 
-            # Build prompt
-            prompt = prompt_template.replace("{content}", content)
-            prompt = prompt.replace("{question}", q_item.question)
+        await runner.run_all(questions, worker, on_result, on_flush=on_flush)
+        if pending:
+            on_flush(0)
+        t = task_repo.get_task(task_id)
+        cancelled = bool(t is not None and getattr(t, "cancel_requested", False))
 
-            raw_output = None
-            last_error = None
-
-            try:
-                for attempt in range(MAX_RETRIES + 1):
-                    try:
-                        llm_start = time.time()
-                        logger.info("LLM request START (attempt %d) at %s", attempt + 1, datetime.utcnow().isoformat())
-                        response = await tracked_complete(
-                            db=db,
-                            project_id=project_id,
-                            config=config,
-                            messages=[{"role": "user", "content": prompt}],
-                            model=model,
-                            temperature=temperature,
-                            max_tokens=max_tokens,
-                            task_id=task_id,
-                        )
-                        logger.info("LLM request END at %s | latency: %.2fs", datetime.utcnow().isoformat(), time.time() - llm_start)
-                        raw_output = response.content
-                        break
-                    except Exception as e:
-                        last_error = str(e)
-                        logger.warning(
-                            "Answer LLM call failed (attempt %d/%d) | question=%s error=%s",
-                            attempt + 1, MAX_RETRIES + 1, q_item.id, last_error,
-                        )
-
-                if raw_output is None:
-                    errors.append({
-                        "item_id": q_item.id,
-                        "message": f"LLM call failed after {MAX_RETRIES + 1} attempts: {last_error}",
-                    })
-                    continue
-
-                # Build payload based on dataset_type
-                try:
-                    logger.info("JSON parse START at %s", datetime.utcnow().isoformat())
-                    payload = _build_payload(dataset_type, raw_output, q_item.question)
-                    logger.info("JSON parse END at %s", datetime.utcnow().isoformat())
-                    if payload is None:
-                        errors.append({
-                            "item_id": q_item.id,
-                            "message": "Could not parse valid output from LLM",
-                        })
-                        continue
-
-                    # Determine source document/chunk/GA pair
-                    source_doc_id = chunk.document_id if chunk else None
-                    source_chunk_id = chunk.id if chunk else None
-                    source_ga_pair_id = q_item.ga_pair_id
-
-                    item = DatasetItem(
-                        project_id=project_id,
-                        question_id=q_item.id,
-                        generation_run_id=generation_run_id,
-                        source_document_id=source_doc_id,
-                        source_chunk_id=source_chunk_id,
-                        source_ga_pair_id=source_ga_pair_id,
-                        dataset_type=dataset_type,
-                        payload=payload,
-                        answer_type=AnswerType.text,
-                    )
-                    all_items.append(item)
-                    logger.info("Dataset item created at %s", datetime.utcnow().isoformat())
-
-                    # Track question ID for bulk update later
-                    answered_question_ids.append(q_item.id)
-
-                except Exception as e:
-                    errors.append({
-                        "item_id": q_item.id,
-                        "message": f"Failed to create dataset item: {str(e)}",
-                    })
-
-            finally:
-                processed += 1
-                logger.info("Progress update START at %s", datetime.utcnow().isoformat())
-                task_repo.update_progress(task_id, completed_increment=1)
-                logger.info("Progress update END at %s", datetime.utcnow().isoformat())
-                logger.info("Question %s DONE at %s | total time: %.2fs", q_item.id, datetime.utcnow().isoformat(), time.time() - q_start)
-
-
-        # Bulk insert all items and mark questions answered atomically
-        if all_items:
-            db.add_all(all_items)
-            
-            from app.models import Question
-            from datetime import datetime
-            if answered_question_ids:
-                db.query(Question).filter(
-                    Question.id.in_(answered_question_ids),
-                    Question.project_id == project_id
-                ).update({
-                    "answered": True,
-                    "reviewed_at": datetime.utcnow()
-                }, synchronize_session=False)
-                
-            logger.info("DB commit START at %s", datetime.utcnow().isoformat())
-            db.commit()
-            logger.info("DB commit END at %s", datetime.utcnow().isoformat())
-            
-            for item in all_items:
-                db.refresh(item)
-
-        # Complete run
-        run_svc.complete_run(
-            generation_run_id,
-            processed_items=len(all_items),
-            total_items=len(all_items),
-        )
-
-        # Complete task
-        task_repo.complete_task(
-            task_id,
-            completed_count=processed,
-            error_count=len(errors),
-            total_count=len(questions),
-        )
+        run_svc.complete_run(generation_run_id, processed_items=created, total_items=created)
+        if not cancelled:
+            task_repo.complete_task(
+                task_id,
+                completed_count=processed,
+                error_count=len(errors),
+                total_count=len(questions),
+            )
+        _append_error_log(db, task_repo, task_id, errors)
 
         logger.info(
-            "Answer generation complete | project=%s questions=%d items=%d errors=%d",
-            project_id, len(questions), len(all_items), len(errors),
+            "Answer generation complete | project=%s questions=%d items=%d errors=%d calls=%d peak_concurrency=%d%s",
+            project_id, len(questions), created, len(errors), runner.calls, runner.peak_in_flight,
+            " (cancelled)" if cancelled else "",
         )
-
     except Exception as e:
         logger.error("Answer generation failed | project=%s error=%s", project_id, str(e))
-        run_svc.fail_run(generation_run_id, error_message=str(e), processed_items=len(all_items))
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        run_svc.fail_run(generation_run_id, error_message=str(e), processed_items=created)
         task_repo.fail_task(task_id, str(e))
         raise
 
     return {
         "task_id": task_id,
         "generation_run_id": generation_run_id,
+        "created": created,
+        "errors": len(errors),
     }
 
-import re
 
-def _clean_markdown(text: str) -> str:
-    # Remove markdown headers
-    text = re.sub(r'^(#{1,6})\s*', '', text, flags=re.MULTILINE)
-    # Remove bold/italic markers
-    text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
-    text = re.sub(r'\*(.*?)\*', r'\1', text)
-    text = re.sub(r'__(.*?)__', r'\1', text)
-    text = re.sub(r'_(.*?)_', r'\1', text)
-    # Remove markdown lists markers (bullet points)
-    text = re.sub(r'^[\-\*\+]\s+', '', text, flags=re.MULTILINE)
-    # Remove excessive blank lines
-    text = re.sub(r'\n{3,}', '\n\n', text)
-    return text.strip()
-
-
-def _build_payload(
-    dataset_type: DatasetType,
-    raw_output: str,
-    question_text: str,
-) -> Optional[dict]:
-    """Build the appropriate payload dict based on dataset_type.
-
-    Validates:
-    - MCQ: correct_answer must be in options
-    """
-    if dataset_type == DatasetType.qa:
-        return {
-            "question": question_text,
-            "answer": _clean_markdown(raw_output),
-        }
-
-    elif dataset_type == DatasetType.mcq:
-        # Expect JSON with options + correct_answer
-        cleaned = raw_output.strip()
-        if cleaned.startswith("```"):
-            lines = cleaned.split("\n")
-            cleaned = "\n".join(lines[1:])
-            if "```" in cleaned:
-                cleaned = cleaned.rsplit("```", 1)[0]
-            cleaned = cleaned.strip()
-
-        try:
-            data = json.loads(cleaned)
-        except json.JSONDecodeError:
-            # Try to extract JSON from text
-            import re
-            match = re.search(r"\{[\s\S]*\}", cleaned)
-            if match:
-                try:
-                    data = json.loads(match.group())
-                except json.JSONDecodeError:
-                    return None
-            else:
-                return None
-
-        options = data.get("options", [])
-        correct_answer = data.get("correct_answer", data.get("answer", ""))
-
-        if not isinstance(options, list) or len(options) < 2:
-            return None
-
-        # Validate correct_answer ∈ options
-        if correct_answer not in options:
-            # Try case-insensitive match
-            matching = [o for o in options if o.lower() == correct_answer.lower()]
-            if matching:
-                correct_answer = matching[0]
-            else:
-                # Default to first option
-                correct_answer = options[0]
-
-        return {
-            "question": question_text,
-            "options": options,
-            "correct_answer": correct_answer,
-        }
-
-    elif dataset_type == DatasetType.classification:
-        # Expect "label: ..." or JSON with label
-        cleaned = _clean_markdown(raw_output)
-        # Try JSON first
-        if cleaned.startswith("{"):
-            try:
-                data = json.loads(cleaned)
-                return {
-                    "text": question_text,
-                    "label": data.get("label", cleaned[:100]),
-                }
-            except json.JSONDecodeError:
-                pass
-
-        # Try "Label: ..." format
-        if ":" in cleaned:
-            label = cleaned.split(":", 1)[1].strip()
-            return {"text": question_text, "label": label[:200]}
-
-        return {
-            "text": question_text,
-            "label": cleaned[:200],
-        }
-
-    return None
+def _append_error_log(db: Session, task_repo: TaskRepository, task_id: str, errors: list[dict]) -> None:
+    if not errors:
+        return
+    task = task_repo.get_task(task_id)
+    if task is None:
+        return
+    log = list(task.error_log or [])
+    log.extend(errors[:MAX_ERROR_LOG])
+    if len(errors) > MAX_ERROR_LOG:
+        log.append({"item_id": None, "message": f"... and {len(errors) - MAX_ERROR_LOG} more errors"})
+    task.error_log = log
+    db.commit()

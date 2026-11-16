@@ -24,9 +24,16 @@ Usage:
     # Returns GenerationEstimateResponse with count=1500, tokens, cost
 """
 
-from typing import Optional
+from typing import Optional, Sequence
 from app.schemas import GenerationEstimateResponse
 from app.core.pricing import estimate_cost_usd, estimate_token_cost
+from app.services.generation.planning import (
+    DEFAULT_CHARS_PER_QUESTION,
+    DEFAULT_MAX_QUESTIONS_PER_CHUNK,
+    ChunkInfo,
+    GAInfo,
+    plan_question_jobs,
+)
 
 # ── Token estimation constants ───────────────────────────────────────
 # These are conservative per-item estimates based on average prompt sizes.
@@ -37,6 +44,12 @@ from app.core.pricing import estimate_cost_usd, estimate_token_cost
 # Input includes: system prompt + chunk content + GA pair context
 # Output is: the generated question text
 TOKENS_PER_QUESTION = (2000, 100)    # (input, output) per question
+
+# Planner-based question estimate: one LLM call per planned job.
+QUESTION_PROMPT_OVERHEAD_TOKENS = 900   # template + GA guidance block
+QUESTION_CONTEXT_MAX_TOKENS = 6000      # matches question_generator.MAX_CONTEXT_TOKENS
+OUTPUT_TOKENS_PER_PLANNED_QUESTION = 60
+CHARS_PER_TOKEN = 4
 
 # Answer generation: (input_tokens_per_item, output_tokens_per_item)
 # Input includes: system prompt + chunk content + question
@@ -112,6 +125,65 @@ def estimate_question_generation(
         estimated_output_tokens=total_output,
         estimated_cost_usd=cost or 0.0,
         warning=warning,
+    )
+
+
+def _volume_warning(item_count: int, noun: str = "items") -> Optional[str]:
+    if item_count > HIGH_VOLUME_THRESHOLD:
+        return (
+            f"This will generate approximately {item_count:,} {noun}, "
+            f"which exceeds the {HIGH_VOLUME_THRESHOLD:,}-item threshold. "
+            f"Consider narrowing your selection."
+        )
+    return None
+
+
+def estimate_question_generation_planned(
+    chunks: Sequence[ChunkInfo],
+    ga_pairs: Sequence[GAInfo],
+    *,
+    mode: str = "auto",
+    questions_per_combination: int = 1,
+    chars_per_question: Optional[int] = None,
+    max_questions_per_chunk: Optional[int] = None,
+    provider: str = "openai",
+    model: str = "gpt-4o",
+) -> GenerationEstimateResponse:
+    """Estimate question generation using the SAME planner as the real run,
+    so ``estimated_item_count`` matches the questions that will be requested.
+
+    Input tokens are counted per planned LLM call (one call per job), using
+    the chunk length (capped like the generator caps context) plus a fixed
+    prompt overhead.
+    """
+    jobs = plan_question_jobs(
+        chunks,
+        ga_pairs,
+        mode=mode,
+        questions_per_combination=questions_per_combination,
+        chars_per_question=chars_per_question or DEFAULT_CHARS_PER_QUESTION,
+        max_questions_per_chunk=max_questions_per_chunk or DEFAULT_MAX_QUESTIONS_PER_CHUNK,
+    )
+    lengths = {c.id: c.length for c in chunks}
+    item_count = sum(j.count for j in jobs)
+    total_input = 0
+    for j in jobs:
+        ctx = min(QUESTION_CONTEXT_MAX_TOKENS, max(1, lengths.get(j.chunk_id, 0) // CHARS_PER_TOKEN))
+        total_input += ctx + QUESTION_PROMPT_OVERHEAD_TOKENS
+    total_output = item_count * OUTPUT_TOKENS_PER_PLANNED_QUESTION + len(jobs) * 20
+
+    cost = estimate_cost_usd(
+        provider=provider,
+        model=model,
+        input_tokens=total_input,
+        output_tokens=total_output,
+    )
+    return GenerationEstimateResponse(
+        estimated_item_count=item_count,
+        estimated_input_tokens=total_input,
+        estimated_output_tokens=total_output,
+        estimated_cost_usd=cost or 0.0,
+        warning=_volume_warning(item_count),
     )
 
 
@@ -284,20 +356,28 @@ def estimate_ga_generation(
     document_count: int,
     provider: str = "openai",
     model: str = "gpt-4o",
+    pairs_per_document: Optional[int] = None,
 ) -> GenerationEstimateResponse:
     """Estimate GA pair generation cost.
 
     Args:
-        document_count: Number of documents to generate GA pairs for.
+        document_count: Number of documents (one LLM call each).
         provider: Provider name for cost estimation.
         model: Model name for cost estimation.
+        pairs_per_document: Pairs requested per document. When omitted the
+            legacy behaviour applies (item count == document_count).
 
     Returns:
         GenerationEstimateResponse with projected counts and cost.
     """
     input_per_item, output_per_item = TOKENS_PER_GA_PAIR
     total_input = document_count * input_per_item
-    total_output = document_count * output_per_item
+    if pairs_per_document:
+        item_count = document_count * pairs_per_document
+        total_output = item_count * output_per_item
+    else:
+        item_count = document_count
+        total_output = document_count * output_per_item
 
     cost = estimate_cost_usd(
         provider=provider,
@@ -307,7 +387,7 @@ def estimate_ga_generation(
     )
 
     return GenerationEstimateResponse(
-        estimated_item_count=document_count,
+        estimated_item_count=item_count,
         estimated_input_tokens=total_input,
         estimated_output_tokens=total_output,
         estimated_cost_usd=cost or 0.0,

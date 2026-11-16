@@ -56,6 +56,9 @@ class ChunkGenerateRequest(BaseModel):
     strategy: Literal["recursive", "markdown", "token"] = "recursive"
     chunk_size: int = Field(default=1000, ge=100, le=8000)
     chunk_overlap: int = Field(default=100, ge=0)
+    # Optional (markdown strategy): sections shorter than this are merged with
+    # neighbours. Defaults to chunk_size // 4 when omitted.
+    min_chunk_size: Optional[int] = Field(default=None, ge=0, le=8000)
 
     @model_validator(mode="after")
     def check_overlap_smaller_than_size(self):
@@ -71,6 +74,7 @@ class ChunkPreviewRequest(BaseModel):
     strategy: Literal["recursive", "markdown", "token"] = "recursive"
     chunk_size: int = Field(default=1000, ge=100, le=8000)
     chunk_overlap: int = Field(default=100, ge=0)
+    min_chunk_size: Optional[int] = Field(default=None, ge=0, le=8000)
 
 
 class ChunkPreviewOut(BaseModel):
@@ -188,6 +192,16 @@ class AnswerGenerateRequest(GenerationConfigBase):
     question_ids: list[str] = Field(min_length=1)
     dataset_type: Literal["qa", "mcq", "conversation", "classification"] = "qa"
     include_cot: bool = False
+    # ── Optional accuracy/speed controls (all backward compatible) ──
+    model: Optional[str] = None
+    concurrency: Optional[int] = Field(default=None, ge=1, le=64)
+    # Quality gate: score every item with an LLM judge (extra call per item).
+    # Score is stored 0-1 in dataset_items.score (+ raw 0-5 in item_metadata),
+    # so exports can filter with filter.min_score. Off unless requested.
+    evaluate: Optional[bool] = None
+    # With evaluate=true: items scoring below this (0-1) are not saved and
+    # their questions stay unanswered so they can be regenerated.
+    min_quality_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
 
 # Discriminated payload shapes — the API validates against the right one
