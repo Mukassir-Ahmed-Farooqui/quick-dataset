@@ -18,7 +18,7 @@ router = APIRouter(prefix="/projects/{project_id}/chunks", tags=["chunks"])
 STORAGE_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "storage")
 
 
-def _generate_in_background(project_id: str, document_ids: list[str], strategy: str, chunk_size: int, chunk_overlap: int, task_id: str | None = None):
+def _generate_in_background(project_id: str, document_ids: list[str], strategy: str, chunk_size: int, chunk_overlap: int, task_id: str | None = None, min_chunk_size: int | None = None):
     from app.core.database import SessionLocal
     db = SessionLocal()
     total_created = 0
@@ -49,6 +49,7 @@ def _generate_in_background(project_id: str, document_ids: list[str], strategy: 
 
             chunks_data = chunk_document(
                 text, strategy=strategy, chunk_size=chunk_size, chunk_overlap=chunk_overlap,
+                min_chunk_size=min_chunk_size,
             )
 
             logger.info(f"[CHUNK-GEN] Doc '{doc.filename}': chunker produced {len(chunks_data)} chunks")
@@ -56,7 +57,12 @@ def _generate_in_background(project_id: str, document_ids: list[str], strategy: 
             from app.models import Chunk
             chunk_objs = []
             for i, c in enumerate(chunks_data):
-                metadata = {"heading_path": c.get("heading_path", [])} if "heading_path" in c else None
+                metadata = None
+                if "heading_path" in c:
+                    metadata = {"heading_path": c.get("heading_path", [])}
+                    for key in ("headings", "part", "total_parts"):
+                        if c.get(key):
+                            metadata[key] = c[key]
                 chunk_objs.append(Chunk(
                     project_id=project_id,
                     document_id=doc_id,
@@ -122,6 +128,7 @@ def preview(
         strategy=data.strategy,
         chunk_size=data.chunk_size,
         chunk_overlap=data.chunk_overlap,
+        min_chunk_size=data.min_chunk_size,
     )
     return result
 
@@ -158,7 +165,7 @@ def generate_chunks(
     background_tasks.add_task(
         _generate_in_background,
         project_id, data.document_ids, data.strategy, data.chunk_size, data.chunk_overlap,
-        task_id,
+        task_id, data.min_chunk_size,
     )
     return TaskAcceptedResponse(task_id=task_id, generation_run_id=task_id)
 

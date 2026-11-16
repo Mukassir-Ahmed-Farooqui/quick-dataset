@@ -19,6 +19,7 @@ Usage:
     )
 """
 
+import os
 import time
 import logging
 import asyncio
@@ -33,6 +34,8 @@ from app.services.llm.provider_factory import ProviderFactory
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_CALL_TIMEOUT = float(os.getenv("LLM_CALL_TIMEOUT", "120"))
+
 
 async def tracked_complete(
     db: Session,
@@ -44,6 +47,8 @@ async def tracked_complete(
     temperature: float = 0.7,
     max_tokens: int = 4096,
     task_id: Optional[str] = None,
+    usage_sink: Optional[list] = None,
+    timeout: Optional[float] = None,
 ) -> LLMResponse:
     """Make an LLM call with full tracking: latency, tokens, cost, logging.
 
@@ -59,6 +64,14 @@ async def tracked_complete(
         temperature: Sampling temperature.
         max_tokens: Maximum tokens to generate.
         task_id: Optional task id to link usage to a background task.
+        usage_sink: Optional list. When given, the usage-log row is appended
+            to it (as kwargs for ``_write_usage_log``) instead of being
+            written immediately. Concurrent generators use this so that
+            only ONE coroutine ever touches the SQLAlchemy Session; they
+            call :func:`flush_usage_logs` from that single place. Exactly
+            one row per call is still guaranteed once flushed.
+        timeout: Hard wall-clock timeout in seconds (default
+            ``LLM_CALL_TIMEOUT`` env, 120s).
 
     Returns:
         LLMResponse with generated content and token counts.
@@ -74,6 +87,8 @@ async def tracked_complete(
     output_tokens = 0
     error_message: Optional[str] = None
     status = "success"
+    effective_timeout = float(timeout or DEFAULT_CALL_TIMEOUT)
+    write_log = (lambda **kw: usage_sink.append(kw)) if usage_sink is not None else (lambda **kw: _write_usage_log(db=db, **kw))
 
     try:
         # Create provider client
@@ -87,7 +102,7 @@ async def tracked_complete(
                 temperature=temperature,
                 max_tokens=max_tokens,
             ),
-            timeout=90.0
+            timeout=effective_timeout,
         )
 
         latency_ms = int((time.time() - start_time) * 1000)
@@ -103,8 +118,7 @@ async def tracked_complete(
         )
 
         # Write success usage log
-        _write_usage_log(
-            db=db,
+        write_log(
             project_id=project_id,
             user_llm_key_id=llm_key_id,
             task_id=task_id,
@@ -129,15 +143,14 @@ async def tracked_complete(
         latency_ms = int((time.time() - start_time) * 1000)
         
         if isinstance(e, asyncio.TimeoutError) or isinstance(e, TimeoutError):
-            error_message = "LLM request exceeded 90 seconds timeout."
+            error_message = f"LLM request exceeded {int(effective_timeout)} seconds timeout."
         else:
             error_message = str(e) or e.__class__.__name__
             
         status = "error"
 
         # Write failure usage log (input_tokens may be partial or 0)
-        _write_usage_log(
-            db=db,
+        write_log(
             project_id=project_id,
             user_llm_key_id=llm_key_id,
             task_id=task_id,
@@ -193,3 +206,19 @@ def _write_usage_log(
     )
     db.add(log_entry)
     db.commit()
+
+
+def flush_usage_logs(db: Session, entries: list) -> int:
+    """Write deferred usage-log rows (see ``usage_sink``) in one commit.
+
+    Clears ``entries`` in place and returns the number written. Must be
+    called from the single coroutine that owns the Session.
+    """
+    if not entries:
+        return 0
+    batch = list(entries)
+    entries.clear()
+    for kw in batch:
+        db.add(LLMUsageLog(**kw))
+    db.commit()
+    return len(batch)

@@ -30,62 +30,251 @@ logger = logging.getLogger(__name__)
 # These ship with the application and serve as the base templates when
 # no project-level override exists. They are not stored in the database.
 
+#
+# Placeholders are plain ``{name}`` tokens substituted by
+# ``app.services.generation.context.render_prompt`` (known keys only, so
+# JSON braces in the examples below are safe). Ported from Easy Dataset's
+# English prompts (lib/llm/prompts/*.js) and tightened.
+#
+#   ga:            {content} {pairs_per_document}
+#   question:      {content} {text_length} {questions_per_combination} (alias {number})
+#                  {ga_prompt} {ga_prompt_note} {ga_prompt_check} {genre} {audience}
+#   answer:        {content} {question} {ga_prompt} {output_format}
+#   evaluation:    {content} {question} {answer}
+#   cot_synthesis: {content} {question} {answer}
+#   cot_optimization: {content} {question} {answer} {cot}
+
+GA_PROMPT = """# Role: Genre & Audience Design Specialist
+## Profile:
+- Description: You are an expert in content analysis and creative abstraction. You design diverse, high-quality [Genre]-[Audience] pairings grounded in a source document, which downstream systems use to vary question style and adapt answers.
+- Output Goal: Produce exactly {pairs_per_document} distinctive [Genre]-[Audience] pairs with clear differentiation.
+
+## Skills:
+1. Derive deep insight into the topic, structure, tone, information density, and potential value of the source document.
+2. Command a wide range of questioning genres: factual recall, conceptual understanding, analytical / root-cause reasoning, comparison, evaluation, procedural / how-to guidance, troubleshooting, application to scenarios.
+3. Portray audiences across age, expertise, motivation, and engagement levels, ensuring multi-perspective coverage.
+4. Communicate precisely so the output can be consumed programmatically.
+
+## Workflow:
+1. **Document Insight**: Read the whole input. If it is a digest (outline plus excerpts), treat the outline as the map of the full document and the excerpts as samples from across it; design pairs that fit the WHOLE document, not just the first excerpt.
+2. **Scenario Ideation**: Imagine realistic learning or inquiry scenarios in which someone would ask questions about this material.
+3. **Pair Construction**: For each scenario, write a genre and a matching audience with an explicit logical connection between them.
+4. **Redundancy Check**: Ensure all pairs differ in genre style, tone, depth, and audience profile; no repetitions or near-duplicates.
+
+## Constraints:
+1. Each genre has a short "title" (2-6 words) and a "description" of 2-3 sentences describing the questioning style, focus, depth, and tone. Exclude visual formats (comics, video, infographics).
+2. Each audience has a short "title" (2-8 words) and a "description" of exactly 2 sentences: background and knowledge level, then motivation and desired outcome. Include both highly engaged and more casual audiences across the set.
+3. Genre and audience within a pair must fit together naturally and must be plausible for THIS document's subject matter.
+4. Do not invent topics unrelated to the document; do not reuse generic templates verbatim.
+5. Return exactly {pairs_per_document} pairs and nothing else: no commentary, no markdown outside the JSON.
+
+## Output Format:
+Return a valid JSON array of length {pairs_per_document}. Every element has "genre" and "audience" objects, each with "title" and "description" string fields. Use double quotes.
+```json
+[
+  {
+    "genre": {"title": "Root Cause Analysis", "description": "Probes why and how things happen, tracing mechanisms and causal chains. Questions demand explanations of underlying principles rather than surface facts."},
+    "audience": {"title": "Junior Engineers Learning the System", "description": "Early-career engineers with basic technical literacy but limited domain experience. They want to understand the reasoning behind design decisions so they can apply it on the job."}
+  }
+]
+```
+
+## Source Document:
+{content}
+"""
+
+QUESTION_PROMPT = """# Role: Text Question Generation Expert
+## Profile:
+- Description: You are an expert in text analysis and question design. You extract key information from passages and produce high-quality questions for building question-answer fine-tuning datasets.
+- Input Length: {text_length} characters
+- Output Goal: Generate exactly {questions_per_combination} high-quality question(s).
+
+## Skills:
+1. Comprehend the passage thoroughly and identify core concepts, facts, figures, procedures, causal relations, and conclusions.
+2. Design questions with a clear, single answer orientation that cover different aspects of the passage.
+3. Balance difficulty and variety (what / why / how / compare / apply) for representative coverage.
+4. Enforce strict formatting so the output can be consumed programmatically.
+
+## Workflow:
+1. **Text Parsing**: Read the entire passage (the "Section:" line, if present, only tells you where the passage sits in a larger document) and note key entities, events, metrics, definitions, steps, and conclusions.
+2. **Question Design**: Select the most informative focal points and craft questions{ga_prompt_note}.
+3. **Quality Check**: Validate every question:
+   - Its answer can be found in, or directly derived from, the passage alone.
+   - It is self-contained: a reader who has not seen the passage understands what is being asked (name the specific subject instead of "it", "this method", "the above").
+   - No two questions share the same topic and angle.
+   - Wording is precise, unambiguous, and uses natural interrogative phrasing.
+   {ga_prompt_check}
+
+## Constraints:
+1. Every question must be grounded strictly in the passage; no outside knowledge, speculation, or hypothetical scenarios whose answers are not in the text.
+2. Cover different themes, layers, or perspectives of the passage; do not cluster on a single sentence.
+3. Never ask about meta information: author, title, chapters, sections, headings, page numbers, table of contents, or document structure.
+4. Never use phrases such as "according to the text/article/passage/document/report", "in this passage", or "the author says"; questions must read naturally on their own.
+5. Do not ask yes/no questions or questions whose answer is a single trivial word unless the fact is genuinely important.
+6. Output exactly {questions_per_combination} question(s), each a single sentence ending with a question mark.
+
+## Output Format:
+Return ONLY a valid JSON array of strings, double-quoted, with no commentary:
+```json
+["Question 1?", "Question 2?"]
+```
+
+## Output Example:
+```json
+["What core elements should an AI ethics framework include?", "How does the Civil Code change the rules for protecting personal data?"]
+```
+
+## Text to Analyze:
+{content}
+
+{ga_prompt}
+"""
+
+ANSWER_PROMPT = """# Role: Fine-tuning Dataset Answer Expert
+## Profile:
+- Description: You write accurate, well-grounded answers to questions using only the reference content provided, producing answers suitable for training large language models.
+
+## Skills:
+1. Locate every piece of information in the reference content that bears on the question.
+2. Synthesize it into a complete, logically ordered answer in natural, fluent language.
+3. Refuse to fabricate: facts, figures, names, and steps come only from the reference content.
+
+{ga_prompt}
+
+## Workflow:
+1. Read the question and identify exactly what it asks for.
+2. Find all relevant facts in the reference content.
+3. Compose an answer that directly addresses the question, covering every relevant point and nothing irrelevant.
+4. Verify every claim in your answer against the reference content; remove anything not supported by it.
+
+## Reference Content:
+------ Reference Content Start ------
+{content}
+------ Reference Content End ------
+
+## Question:
+{question}
+
+## Constraints:
+1. The answer must be based strictly on the reference content. Do not add outside knowledge, opinions, or assumptions.
+2. If the reference content only partially answers the question, answer what it supports and state briefly which part it does not cover. Never invent the missing part.
+3. Be comprehensive and detailed enough to fully answer the question, but do not pad with repetition.
+4. Never use referential phrases such as "according to the reference", "the text states", "based on the document", or citation marks; present the information directly.
+5. Begin with the direct answer, then give supporting detail, steps, or explanation where useful.
+{output_format}
+"""
+
+EVALUATION_PROMPT = """# Role: Dataset Quality Evaluation Expert
+## Profile:
+- Description: You are a strict evaluator of question-answer training data. You judge each sample on multiple dimensions and give a calibrated score used to filter data for fine-tuning.
+
+## Evaluation Dimensions:
+### 1. Question Quality (25%)
+- 5: Clear, precise, self-contained, grammatical, appropriate difficulty.
+- 3: Understandable but somewhat ambiguous, vague, or reliant on unseen context.
+- 1: Seriously unclear, meta (about the document itself), or unanswerable.
+- 0: Incomprehensible.
+
+### 2. Answer Quality (35%)
+- 5: Completely accurate, complete, logically structured, directly addresses the question.
+- 3: Generally correct but missing details or with weak structure.
+- 1: Mostly wrong or off-topic.
+- 0: Completely wrong or irrelevant.
+
+### 3. Grounding in the Source Text (25%)
+- 5: Every claim in the answer is supported by the source text; nothing is fabricated.
+- 3: Mostly supported, with minor unsupported additions.
+- 1: Largely unsupported by or contradicting the source text.
+- 0: Unrelated to the source text.
+If no source text is given, judge internal consistency and factual plausibility instead.
+
+### 4. Overall Consistency & Training Value (15%)
+- 5: Question, answer, and source form a coherent whole; ideal for training.
+- 3: Usable after slight adjustment.
+- 1: Not suitable for training without major changes.
+
+## Source Text:
+{content}
+
+## Question:
+{question}
+
+## Answer:
+{answer}
+
+## Rules:
+1. Final score = Question×0.25 + Answer×0.35 + Grounding×0.25 + Consistency×0.15, on a 0-5 scale, rounded to the nearest 0.5.
+2. Be strict: 5 means near-perfect. Any factual error, fabrication, or a meta/unanswerable question must score below 2.
+3. Keep the evaluation under 80 words, naming the main strength and the main weakness.
+
+## Output Format:
+Return ONLY a JSON object, no markdown, no other text:
+{"score": 4.5, "evaluation": "Clear, specific question; the answer is accurate and fully supported by the source, but omits one minor detail."}
+"""
+
+COT_SYNTHESIS_PROMPT = """# Role: Chain-of-Thought Reconstruction Expert
+## Profile:
+- Description: Given a question, reference content, and the final answer, you reconstruct the reasoning path an expert would follow from the question to that answer, written as a natural internal monologue.
+
+## Workflow:
+1. Understand what the question really asks and what type it is (factual, causal, comparative, procedural, ...).
+2. Break the answer into its key components and identify the evidence each one rests on.
+3. Connect the evidence in a natural order (known to unknown, surface to depth), each step building on the previous one.
+4. Check that the reasoning converges exactly on the given answer, with no gaps or extra conclusions.
+
+## Question:
+{question}
+
+## Reference Content:
+------ Reference Content Start ------
+{content}
+------ Reference Content End ------
+
+## Answer:
+{answer}
+
+## Constraints:
+1. Every step must follow logically from the previous ones; no unsupported leaps.
+2. Never use citation phrases such as "according to the reference", "the document mentions", or "based on the source"; present information as reasoning.
+3. Progress naturally: first analyse the problem, then gather the key conditions, derive step by step, and finally conclude.
+4. The conclusion must match the given answer exactly: introduce nothing new and omit nothing essential.
+5. 3-5 steps for simple questions, 5-8 for complex ones. Write in flowing prose, not numbered lists.
+6. Output only the chain of thought itself, with no title or preface.
+"""
+
+COT_OPTIMIZATION_PROMPT = """# Role: Chain-of-Thought Optimization Expert
+## Profile:
+- Description: You clean up a chain of thought: remove citation and reference phrases and present it as a coherent, natural reasoning process.
+
+## Workflow:
+1. Study the question, the answer, and the original chain of thought.
+2. Remove every reference or citation expression ("the document mentions", "according to the material", "the reference content says", ...), rewriting sentences so they still flow.
+3. Make sure the optimized reasoning still leads to the answer and stays tied to the question.
+
+## Reference Content:
+{content}
+
+## Question:
+{question}
+
+## Answer:
+{answer}
+
+## Original Chain of Thought:
+{cot}
+
+## Constraints:
+1. Remove all reference and citation phrases.
+2. Keep the reasoning complete, logical, and consistent with the answer.
+3. Use a natural progression (first, then, next, finally) without numbered lists.
+4. Output only the optimized chain of thought, with no title or preface such as "Optimized chain of thought:".
+"""
+
 SYSTEM_PROMPTS: dict[PromptType, str] = {
-    PromptType.ga: (
-        "You are a Genre/Audience pair generation expert. Your task is to "
-        "analyze the provided document content and generate diverse, "
-        "non-redundant Genre/Audience pairs that would be suitable for "
-        "creating high-quality questions.\n\n"
-        "A Genre is a category or style of content (e.g., 'Technical Documentation', "
-        "'User Guide', 'Academic Paper', 'Troubleshooting Guide').\n"
-        "An Audience is the target reader demographic (e.g., 'Software Engineers', "
-        "'Medical Students', 'General Public', 'IT Administrators').\n\n"
-        "IMPORTANT RULES:\n"
-        "1. Generate exactly {pairs_per_document} different Genre/Audience pairs.\n"
-        "2. Each pair must be distinct — avoid similar genres or audiences.\n"
-        "3. Cover different aspects of the content across pairs.\n"
-        "4. Be specific and descriptive in titles and descriptions.\n"
-        "5. Return ONLY valid JSON — no explanations, no markdown, no code blocks.\n\n"
-        "RESPONSE FORMAT (strict JSON array):\n"
-        "[\n"
-        "  {\n"
-        "    \"genre\": {\"title\": \"...\", \"description\": \"...\"},\n"
-        "    \"audience\": {\"title\": \"...\", \"description\": \"...\"}\n"
-        "  }\n"
-        "]\n\n"
-        "Document content:\n{content}\n\n"
-        "Generate exactly {pairs_per_document} Genre/Audience pairs in the exact JSON format specified above."
-    ),
-    PromptType.question: (
-        "You are a question generation expert. Given the following chunk of "
-        "content and a Genre/Audience specification, generate exactly "
-        "{questions_per_combination} question(s) that test understanding of the "
-        "content.\n\n"
-        "Genre: {genre}\n"
-        "Audience: {audience}\n\n"
-        "Content:\n{content}\n\n"
-        "IMPORTANT: Return ONLY a JSON array of strings. "
-        "Example: [\"What is the main concept?\", \"How does this work?\"]\n"
-        "No explanations, no numbering, no markdown. Valid JSON only."
-    ),
-    PromptType.answer: (
-        "You are an answer generation expert. Given the following question and "
-        "context, generate a thorough, accurate answer.\n\n"
-        "Context:\n{content}\n\n"
-        "Question:\n{question}\n\n"
-        "Provide a clear, well-structured answer based solely on the context provided."
-    ),
-    PromptType.evaluation: (
-        "You are an evaluation judge. Given the following question, context, and "
-        "answer, evaluate the answer on a scale of 0.0 to 1.0 based on:\n"
-        "- Correctness: Is the answer factually accurate?\n"
-        "- Completeness: Does the answer fully address the question?\n"
-        "- Clarity: Is the answer well-structured and easy to understand?\n\n"
-        "Context:\n{content}\n\n"
-        "Question:\n{question}\n\n"
-        "Answer:\n{answer}\n\n"
-        "Return a JSON object with 'score' (float 0.0-1.0) and 'evaluation' (string)."
-    ),
+    PromptType.ga: GA_PROMPT,
+    PromptType.question: QUESTION_PROMPT,
+    PromptType.answer: ANSWER_PROMPT,
+    PromptType.evaluation: EVALUATION_PROMPT,
     PromptType.conversation: (
         "You are a conversation generation expert. Create a conversation with "
         "{turn_count} turns between {role_a} and {role_b} based on the following "
@@ -93,28 +282,11 @@ SYSTEM_PROMPTS: dict[PromptType, str] = {
         "Scenario: {scenario}\n\n"
         "Context:\n{content}\n\n"
         "Question:\n{question}\n\n"
-        "Generate a natural, realistic conversation that explores the topic."
+        "Generate a natural, realistic conversation that explores the topic. "
+        "Every factual statement must be supported by the context."
     ),
-    PromptType.cot_synthesis: (
-        "You are a chain-of-thought synthesis expert. Given the following "
-        "question, answer, and context, generate a step-by-step reasoning "
-        "trajectory that explains how one arrives at the given answer.\n\n"
-        "Context:\n{content}\n\n"
-        "Question:\n{question}\n\n"
-        "Answer:\n{answer}\n\n"
-        "Provide a clear, logical chain of thought that connects the question "
-        "to the answer."
-    ),
-    PromptType.cot_optimization: (
-        "You are a chain-of-thought optimization expert. Given the following "
-        "question, answer, and current chain of thought, produce an optimized "
-        "version that is more concise, clear, and logically structured.\n\n"
-        "Context:\n{content}\n\n"
-        "Question:\n{question}\n\n"
-        "Answer:\n{answer}\n\n"
-        "Current CoT:\n{cot}\n\n"
-        "Provide an optimized chain of thought."
-    ),
+    PromptType.cot_synthesis: COT_SYNTHESIS_PROMPT,
+    PromptType.cot_optimization: COT_OPTIMIZATION_PROMPT,
 }
 
 

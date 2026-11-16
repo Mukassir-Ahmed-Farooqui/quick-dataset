@@ -2,6 +2,7 @@ import time
 import httpx
 from typing import List, Dict
 from app.services.llm.base import BaseLLMProvider
+from app.services.llm.http_client import get_http_client
 from app.schemas_extended import LLMResponse, ProviderTestResult
 
 
@@ -15,38 +16,38 @@ class GeminiProvider(BaseLLMProvider):
         self, messages: List[Dict[str, str]], model: str,
         temperature: float = 0.7, max_tokens: int = 4096,
     ) -> LLMResponse:
-        async with httpx.AsyncClient() as client:
-            contents = []
-            system_instruction = None
-            for m in messages:
-                role = m["role"]
-                if role == "system":
-                    system_instruction = {"parts": [{"text": m["content"]}]}
-                elif role == "user":
-                    contents.append({"role": "user", "parts": [{"text": m["content"]}]})
-                elif role == "assistant":
-                    contents.append({"role": "model", "parts": [{"text": m["content"]}]})
+        client = get_http_client()
+        contents = []
+        system_instruction = None
+        for m in messages:
+            role = m["role"]
+            if role == "system":
+                system_instruction = {"parts": [{"text": m["content"]}]}
+            elif role == "user":
+                contents.append({"role": "user", "parts": [{"text": m["content"]}]})
+            elif role == "assistant":
+                contents.append({"role": "model", "parts": [{"text": m["content"]}]})
 
-            body = {
-                "contents": contents,
-                "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens},
-            }
-            if system_instruction:
-                body["systemInstruction"] = system_instruction
+        body = {
+            "contents": contents,
+            "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens},
+        }
+        if system_instruction:
+            body["systemInstruction"] = system_instruction
 
-            url = f"{self.base_url}/models/{model}:generateContent?key={self.api_key}"
-            response = await client.post(url, json=body, timeout=60.0)
-            response.raise_for_status()
-            data = response.json()
+        url = f"{self.base_url}/models/{model}:generateContent?key={self.api_key}"
+        response = await client.post(url, json=body)
+        response.raise_for_status()
+        data = response.json()
 
-            text = data["candidates"][0]["content"]["parts"][0]["text"]
-            usage = data.get("usageMetadata", {})
-            return LLMResponse(
-                content=text,
-                prompt_tokens=usage.get("promptTokenCount", 0),
-                completion_tokens=usage.get("candidatesTokenCount", 0),
-                total_tokens=usage.get("totalTokenCount", 0),
-            )
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+        usage = data.get("usageMetadata", {})
+        return LLMResponse(
+            content=text,
+            prompt_tokens=usage.get("promptTokenCount", 0),
+            completion_tokens=usage.get("candidatesTokenCount", 0),
+            total_tokens=usage.get("totalTokenCount", 0),
+        )
 
     async def stream(self, messages: List[Dict[str, str]], model: str):
         raise NotImplementedError("Streaming not yet implemented")

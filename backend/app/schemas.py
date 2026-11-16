@@ -205,6 +205,22 @@ class QuestionGenerateRequest(GenerationConfigBase):
     ga_pair_ids: Optional[list[str]] = None
     dataset_type: Literal["qa", "mcq", "conversation", "classification"] = "qa"
     questions_per_combination: int = Field(default=1, ge=1, le=10)
+    # ── Optional accuracy/speed controls (all backward compatible) ──
+    # Model to use; defaults to a sensible model for the resolved key's provider.
+    model: Optional[str] = None
+    # "auto": ~1 question per `chars_per_question` characters of each chunk
+    #   (min 1, capped by `max_questions_per_chunk`), distributed across GA
+    #   pairs instead of a full cross product.
+    # "per_combination": legacy chunks x GA pairs x questions_per_combination.
+    # When omitted: legacy if questions_per_combination is sent explicitly,
+    # otherwise auto.
+    question_count_mode: Optional[Literal["auto", "per_combination"]] = None
+    chars_per_question: Optional[int] = Field(default=None, ge=50, le=10000)
+    max_questions_per_chunk: Optional[int] = Field(default=None, ge=1, le=50)
+    # Easy Dataset augmentation: probability (0-1) of dropping the trailing "?".
+    question_mark_removal_probability: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    # Max concurrent LLM calls for this run (default GENERATION_CONCURRENCY=8).
+    concurrency: Optional[int] = Field(default=None, ge=1, le=64)
 
 
 class GenerationEstimateResponse(BaseModel):

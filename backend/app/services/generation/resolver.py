@@ -149,3 +149,18 @@ def resolve_llm_config_with_model(
     )
     config.model = model
     return config
+
+
+# Sensible default model per provider, used when a request does not name
+# one. Previously every endpoint hard-coded "gpt-4o-mini", which fails for
+# Groq / Gemini keys.
+DEFAULT_MODELS: dict[str, str] = {
+    "openai": "gpt-4o-mini",
+    "openrouter": "openai/gpt-4o-mini",
+    "groq": "llama-3.3-70b-versatile",
+    "gemini": "gemini-2.0-flash",
+}
+
+
+def default_model_for(provider: Optional[str]) -> str:
+    return DEFAULT_MODELS.get((provider or "").lower(), "gpt-4o-mini")
