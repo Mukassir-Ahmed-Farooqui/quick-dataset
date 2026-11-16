@@ -1,37 +1,26 @@
-import { type Variants } from 'framer-motion'
+import type { Transition, Variants } from 'framer-motion'
+
+/** Mindcase-style easing: cubic-bezier(0, 0, .2, 1). Keep everything 150–250ms. */
+export const ease = [0, 0, 0.2, 1] as const
+export const fast: Transition = { duration: 0.18, ease }
 
 export const fadeUp: Variants = {
-  hidden: { opacity: 0, y: 30 },
-  visible: { opacity: 1, y: 0, transition: { duration: 0.5, ease: 'easeOut' } },
+  hidden: { opacity: 0, y: 6 },
+  visible: { opacity: 1, y: 0, transition: { duration: 0.2, ease } },
 }
 
 export const fadeIn: Variants = {
   hidden: { opacity: 0 },
-  visible: { opacity: 1, transition: { duration: 0.4 } },
-}
-
-export const fadeLeft: Variants = {
-  hidden: { opacity: 0, x: -30 },
-  visible: { opacity: 1, x: 0, transition: { duration: 0.5, ease: 'easeOut' } },
-}
-
-export const fadeRight: Variants = {
-  hidden: { opacity: 0, x: 30 },
-  visible: { opacity: 1, x: 0, transition: { duration: 0.5, ease: 'easeOut' } },
+  visible: { opacity: 1, transition: { duration: 0.15, ease } },
 }
 
 export const stagger: Variants = {
   hidden: {},
-  visible: { transition: { staggerChildren: 0.08 } },
+  visible: { transition: { staggerChildren: 0.03 } },
 }
 
-export const scaleUp: Variants = {
-  hidden: { opacity: 0, scale: 0.9 },
-  visible: { opacity: 1, scale: 1, transition: { duration: 0.4, ease: 'easeOut' } },
+export const collapse: Variants = {
+  hidden: { opacity: 0, height: 0 },
+  visible: { opacity: 1, height: 'auto', transition: { duration: 0.2, ease } },
+  exit: { opacity: 0, height: 0, transition: { duration: 0.15, ease } },
 }
-
-export const cardHover = {
-  whileHover: { y: -4, transition: { duration: 0.2 } },
-}
-
-export const buttonTap = { whileTap: { scale: 0.97 } }

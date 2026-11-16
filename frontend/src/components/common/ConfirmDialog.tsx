@@ -1,36 +1,21 @@
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 
 interface ConfirmDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   title: string
-  message: string
+  message: React.ReactNode
   onConfirm: () => void
-  onCancel?: () => void
   confirmLabel?: string
   variant?: 'default' | 'destructive'
+  loading?: boolean
 }
 
-export default function ConfirmDialog({
-  open,
-  onOpenChange,
-  title,
-  message,
-  onConfirm,
-  confirmLabel = 'Confirm',
-  variant = 'default',
-}: ConfirmDialogProps) {
+export default function ConfirmDialog({ open, onOpenChange, title, message, onConfirm, confirmLabel = 'Confirm', variant = 'default', loading }: ConfirmDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{message}</DialogDescription>
@@ -39,10 +24,7 @@ export default function ConfirmDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button
-            variant={variant === 'destructive' ? 'destructive' : 'default'}
-            onClick={onConfirm}
-          >
+          <Button variant={variant === 'destructive' ? 'destructive' : 'default'} onClick={onConfirm} loading={loading} autoFocus>
             {confirmLabel}
           </Button>
         </DialogFooter>

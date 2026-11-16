@@ -1,115 +1,171 @@
-import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { Loader2, Menu } from 'lucide-react'
+import { Fragment, useState } from 'react'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { HelpCircle, LayoutDashboard, LogOut, Menu, Moon, Sun } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
+import { useTheme } from '@/lib/theme'
 import { toast } from '@/lib/toast'
-import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
+import { Button } from '@/components/ui/button'
+import { Tooltip } from '@/components/ui/tooltip'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { useProject } from '@/hooks/useProjects'
+import { prefetchPage } from '@/routes/pages'
+import { cn } from '@/lib/utils'
+import { stepLabel, useRouteProjectId, useRouteStep } from './useProjectPipeline'
 
-interface NavbarProps {
-  title?: string
-  onMenuToggle?: () => void
+interface Crumb {
+  label: React.ReactNode
+  to?: string
 }
 
-export default function Navbar({ title, onMenuToggle }: NavbarProps) {
+function useBreadcrumbs(): Crumb[] {
+  const { pathname } = useLocation()
+  const projectId = useRouteProjectId()
+  const step = useRouteStep()
+  const project = useProject(projectId ?? '')
+
+  if (pathname.startsWith('/dashboard')) return [{ label: 'Dashboard' }]
+  if (pathname.startsWith('/providers')) return [{ label: 'Providers' }]
+  if (pathname === '/projects/new') return [{ label: 'Projects', to: '/projects' }, { label: 'New' }]
+  if (projectId) {
+    const name = project.data?.name ?? <span className="skeleton inline-block h-3 w-24 align-middle" />
+    const crumbs: Crumb[] = [{ label: 'Projects', to: '/projects' }, { label: name, to: step ? `/projects/${projectId}` : undefined }]
+    if (step) crumbs.push({ label: stepLabel(step) })
+    return crumbs
+  }
+  if (pathname.startsWith('/projects')) return [{ label: 'Projects' }]
+  return []
+}
+
+function Breadcrumbs() {
+  const crumbs = useBreadcrumbs()
+  return (
+    <nav aria-label="Breadcrumb" className="min-w-0">
+      <ol className="flex min-w-0 items-center gap-2 font-display text-[11.5px] uppercase tracking-widest">
+        {crumbs.map((c, i) => {
+          const last = i === crumbs.length - 1
+          return (
+            <Fragment key={i}>
+              {i > 0 && (
+                <li aria-hidden className="text-fg-subtle">
+                  /
+                </li>
+              )}
+              <li className={cn('min-w-0', i === 1 && crumbs.length > 2 ? 'hidden truncate sm:block' : 'truncate')}>
+                {c.to && !last ? (
+                  <Link
+                    to={c.to}
+                    onMouseEnter={() => prefetchPage(c.to === '/projects' ? 'projects' : 'overview')}
+                    className="text-fg-muted transition-colors hover:text-fg"
+                  >
+                    {c.label}
+                  </Link>
+                ) : (
+                  <span className="text-fg" aria-current={last ? 'page' : undefined}>
+                    {c.label}
+                  </span>
+                )}
+              </li>
+            </Fragment>
+          )
+        })}
+      </ol>
+    </nav>
+  )
+}
+
+interface NavbarProps {
+  onMenuToggle?: () => void
+  onHelp?: () => void
+}
+
+export default function Navbar({ onMenuToggle, onHelp }: NavbarProps) {
   const navigate = useNavigate()
   const { user, logout } = useAuth()
-  const [isSigningOut, setIsSigningOut] = useState(false)
-  const [open, setOpen] = useState(false)
-
+  const { resolved, toggle } = useTheme()
+  const [signingOut, setSigningOut] = useState(false)
   const initials = user?.username?.charAt(0).toUpperCase() || 'U'
 
   const handleSignOut = async () => {
-    setIsSigningOut(true)
-    setOpen(false)
-    await logout()
-    setIsSigningOut(false)
-    toast({ title: 'Signed out', description: "You've been signed out successfully." })
-    navigate('/login', { replace: true })
+    setSigningOut(true)
+    try {
+      await logout()
+      toast({ title: 'Signed out' })
+      navigate('/login', { replace: true })
+    } finally {
+      setSigningOut(false)
+    }
   }
 
   return (
-    <header className="h-16 border-b border-hairline bg-canvas/80 backdrop-blur-md px-4 sm:px-6 lg:px-8 flex items-center justify-between sticky top-0 z-10">
-      <div className="flex items-center gap-3">
+    <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center justify-between gap-4 border-b border-line bg-bg/90 px-4 backdrop-blur sm:px-6">
+      <div className="flex min-w-0 items-center gap-3">
         {onMenuToggle && (
           <button
+            type="button"
             onClick={onMenuToggle}
-            className="lg:hidden text-muted hover:text-ink p-1.5 -ml-1.5 transition-colors"
-            aria-label="Toggle menu"
+            className="-ml-1.5 p-1.5 text-fg-muted transition-colors hover:text-fg lg:hidden"
+            aria-label="Open menu"
           >
-            <Menu className="h-5 w-5" />
+            <Menu className="size-4" />
           </button>
         )}
-        <h2 className="text-sm font-medium text-ink truncate">{title || 'Dashboard'}</h2>
+        <Breadcrumbs />
       </div>
-      <div className="flex items-center gap-4 flex-shrink-0">
-        <DropdownMenu.Root open={open} onOpenChange={setOpen}>
-          <DropdownMenu.Trigger asChild>
+
+      <div className="flex shrink-0 items-center gap-1">
+        {onHelp && (
+          <Tooltip content="Keyboard shortcuts (?)">
+            <Button variant="ghost" size="icon-sm" onClick={onHelp} aria-label="Keyboard shortcuts">
+              <HelpCircle />
+            </Button>
+          </Tooltip>
+        )}
+        <Tooltip content={`${resolved === 'dark' ? 'Light' : 'Dark'} theme (t)`}>
+          <Button variant="ghost" size="icon-sm" onClick={toggle} aria-label="Toggle theme">
+            {resolved === 'dark' ? <Sun /> : <Moon />}
+          </Button>
+        </Tooltip>
+
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
             <button
-              className="w-8 h-8 rounded-full bg-stone border border-hairline flex items-center justify-center
-                hover:bg-stone/80 transition-colors focus-visible:ring-2 focus-visible:ring-action focus-visible:ring-offset-2
-                text-sm font-medium text-ink"
+              type="button"
+              className="ml-1 flex size-7 items-center justify-center border border-line bg-bg-subtle font-display text-xs font-bold text-fg transition-colors hover:border-line-strong"
               aria-label="User menu"
             >
               {initials}
             </button>
-          </DropdownMenu.Trigger>
-
-          <DropdownMenu.Portal>
-            <DropdownMenu.Content
-              align="end"
-              sideOffset={6}
-              className="bg-white rounded-lg border border-hairline shadow-lg p-1.5 min-w-[200px]
-                data-[side=bottom]:animate-in data-[side=bottom]:slide-in-from-top-2 z-50"
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuLabel className="pb-0 font-display text-xs font-bold text-fg">{user?.username}</DropdownMenuLabel>
+            <DropdownMenuLabel className="truncate pt-0.5 font-mono text-[11px]">{user?.email}</DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={() => navigate('/dashboard')}>
+              <LayoutDashboard /> Dashboard
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={toggle}>
+              {resolved === 'dark' ? <Sun /> : <Moon />} {resolved === 'dark' ? 'Light' : 'Dark'} theme
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onSelect={(e) => {
+                e.preventDefault()
+                void handleSignOut()
+              }}
+              disabled={signingOut}
+              className="text-danger [&_svg]:text-danger"
             >
-              <DropdownMenu.Label className="px-2.5 py-1.5 text-xs text-muted">
-                {user?.username}
-              </DropdownMenu.Label>
-              <DropdownMenu.Label className="px-2.5 pb-1.5 text-xs text-muted truncate">
-                {user?.email}
-              </DropdownMenu.Label>
-
-              <DropdownMenu.Separator className="h-px bg-hairline my-1" />
-
-              <DropdownMenu.Item
-                onSelect={() => navigate('/dashboard')}
-                className="px-2.5 py-2 text-sm text-ink rounded-md cursor-pointer
-                  data-[highlighted]:bg-stone data-[highlighted]:outline-none"
-              >
-                Dashboard
-              </DropdownMenu.Item>
-              <DropdownMenu.Item
-                onSelect={() => {
-                  toast({ title: 'Coming soon', description: 'Settings page is under development.' })
-                }}
-                className="px-2.5 py-2 text-sm text-ink rounded-md cursor-pointer
-                  data-[highlighted]:bg-stone data-[highlighted]:outline-none"
-              >
-                Settings
-              </DropdownMenu.Item>
-
-              <DropdownMenu.Separator className="h-px bg-hairline my-1" />
-
-              <DropdownMenu.Item
-                onSelect={handleSignOut}
-                disabled={isSigningOut}
-                className="px-2.5 py-2 text-sm text-error rounded-md cursor-pointer
-                  data-[highlighted]:bg-stone data-[highlighted]:outline-none
-                  disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {isSigningOut ? (
-                  <span className="flex items-center gap-2">
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    Signing out\u2026
-                  </span>
-                ) : (
-                  'Sign out'
-                )}
-              </DropdownMenu.Item>
-
-              <DropdownMenu.Arrow className="fill-white" />
-            </DropdownMenu.Content>
-          </DropdownMenu.Portal>
-        </DropdownMenu.Root>
+              <LogOut /> {signingOut ? 'Signing out…' : 'Sign out'}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
     </header>
   )
