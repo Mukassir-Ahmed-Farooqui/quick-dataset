@@ -1,55 +1,66 @@
-import { lazy, Suspense } from 'react'
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { Suspense } from 'react'
+import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router-dom'
 import DashboardLayout from '@/components/layout/DashboardLayout'
 import ProtectedRoute from '@/routes/ProtectedRoute'
 import PublicRoute from '@/routes/PublicRoute'
 import LoadingState from '@/components/common/LoadingState'
+import { Pages } from '@/routes/pages'
 
-const LandingPage = lazy(() => import('@/pages/LandingPage'))
-const LoginPage = lazy(() => import('@/features/auth/pages/LoginPage'))
-const RegisterPage = lazy(() => import('@/features/auth/pages/RegisterPage'))
-const DashboardPage = lazy(() => import('@/pages/DashboardPage'))
-const ProjectsPage = lazy(() => import('@/features/projects/pages/ProjectsPage'))
-const CreateProjectPage = lazy(() => import('@/features/projects/pages/CreateProjectPage'))
-const ProjectDetailPage = lazy(() => import('@/features/projects/pages/ProjectDetailPage'))
-const GAPairsPage = lazy(() => import('@/features/ga-pairs/pages/GAPairsPage'))
-const QuestionsPage = lazy(() => import('@/features/questions/pages/QuestionsPage'))
-const DatasetReviewPage = lazy(() => import('@/features/dataset-review/pages/DatasetReviewPage'))
-const ProvidersPage = lazy(() => import('@/features/providers/pages/ProvidersPage'))
-const NotFoundPage = lazy(() => import('@/pages/NotFoundPage'))
+function FullPageFallback() {
+  return (
+    <div className="grid min-h-screen place-items-center bg-bg">
+      <div className="h-px w-40 overflow-hidden bg-line">
+        <div className="h-full w-1/3 animate-shimmer bg-accent" />
+      </div>
+    </div>
+  )
+}
 
-function SuspenseWrapper({ children }: { children: React.ReactNode }) {
+function S({ children }: { children: React.ReactNode }) {
   return <Suspense fallback={<LoadingState />}>{children}</Suspense>
+}
+
+function LegacyReviewRedirect() {
+  const { projectId } = useParams()
+  return <Navigate to={`/projects/${projectId}/dataset-review`} replace />
 }
 
 export default function AppRouter() {
   return (
     <BrowserRouter>
-      <Suspense fallback={<LoadingState />}>
+      <Suspense fallback={<FullPageFallback />}>
         <Routes>
-          {/* Landing page — public, no guard */}
-          <Route path="/" element={<SuspenseWrapper><LandingPage /></SuspenseWrapper>} />
+          <Route path="/" element={<Pages.Landing />} />
 
-          {/* Auth routes — public, redirect if authenticated */}
           <Route element={<PublicRoute />}>
-            <Route path="/login" element={<SuspenseWrapper><LoginPage /></SuspenseWrapper>} />
-            <Route path="/register" element={<SuspenseWrapper><RegisterPage /></SuspenseWrapper>} />
+            <Route path="/login" element={<Pages.Login />} />
+            <Route path="/register" element={<Pages.Register />} />
           </Route>
 
-          {/* Protected routes */}
-          <Route element={<ProtectedRoute><DashboardLayout /></ProtectedRoute>}>
-            <Route path="/dashboard" element={<SuspenseWrapper><DashboardPage /></SuspenseWrapper>} />
-            <Route path="/projects" element={<SuspenseWrapper><ProjectsPage /></SuspenseWrapper>} />
-            <Route path="/projects/new" element={<SuspenseWrapper><CreateProjectPage /></SuspenseWrapper>} />
-            <Route path="/projects/:projectId" element={<SuspenseWrapper><ProjectDetailPage /></SuspenseWrapper>} />
-            <Route path="/projects/:projectId/ga-pairs" element={<SuspenseWrapper><GAPairsPage /></SuspenseWrapper>} />
-            <Route path="/projects/:projectId/questions" element={<SuspenseWrapper><QuestionsPage /></SuspenseWrapper>} />
-            <Route path="/projects/:projectId/dataset-review" element={<SuspenseWrapper><DatasetReviewPage /></SuspenseWrapper>} />
-            <Route path="/providers" element={<SuspenseWrapper><ProvidersPage /></SuspenseWrapper>} />
+          <Route
+            element={
+              <ProtectedRoute>
+                <DashboardLayout />
+              </ProtectedRoute>
+            }
+          >
+            <Route path="/dashboard" element={<S><Pages.Dashboard /></S>} />
+            <Route path="/projects" element={<S><Pages.Projects /></S>} />
+            <Route path="/projects/new" element={<S><Pages.CreateProject /></S>} />
+            <Route path="/providers" element={<S><Pages.Providers /></S>} />
+            <Route path="/projects/:projectId" element={<S><Pages.ProjectLayout /></S>}>
+              <Route index element={<S><Pages.Overview /></S>} />
+              <Route path="documents" element={<S><Pages.Documents /></S>} />
+              <Route path="chunks" element={<S><Pages.Chunks /></S>} />
+              <Route path="ga-pairs" element={<S><Pages.GAPairs /></S>} />
+              <Route path="questions" element={<S><Pages.Questions /></S>} />
+              <Route path="dataset-review" element={<S><Pages.Review /></S>} />
+              <Route path="review" element={<LegacyReviewRedirect />} />
+              <Route path="export" element={<S><Pages.Export /></S>} />
+            </Route>
           </Route>
 
-          {/* 404 */}
-          <Route path="*" element={<NotFoundPage />} />
+          <Route path="*" element={<Pages.NotFound />} />
         </Routes>
       </Suspense>
     </BrowserRouter>

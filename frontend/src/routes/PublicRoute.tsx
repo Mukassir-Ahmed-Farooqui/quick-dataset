@@ -11,7 +11,7 @@ export default function PublicRoute({ children }: PublicRouteProps) {
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center min-h-screen bg-canvas">
+      <div className="flex items-center justify-center min-h-screen bg-bg">
         <LoadingState />
       </div>
     )

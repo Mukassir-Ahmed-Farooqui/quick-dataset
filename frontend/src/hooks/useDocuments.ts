@@ -1,46 +1,37 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { documentsApi } from '@/api/documents'
-import type { DocumentOut, PageEnvelope } from '@/types/api'
 
 interface UseDocumentsOptions {
   page?: number
   pageSize?: number
-  search?: string
 }
 
+/** Polls every 2.5s only while some document is still queued/parsing. */
 export function useDocuments(projectId: string, options: UseDocumentsOptions = {}) {
-  const { page = 1, pageSize = 50, search } = options
+  const { page = 1, pageSize = 100 } = options
   return useQuery({
-    queryKey: ['documents', projectId, { search }, page, pageSize],
+    queryKey: ['documents', projectId, page, pageSize],
     queryFn: () => documentsApi.list(projectId, page, pageSize),
     enabled: !!projectId,
     refetchInterval: (query) => {
-      const data = query.state.data as PageEnvelope<DocumentOut> | undefined
-      if (!data?.items) return 5000
-      const hasPending = data.items.some(
-        (d) => d.processing_status === 'queued' || d.processing_status === 'parsing',
-      )
-      return hasPending ? 3000 : false
+      const items = query.state.data?.items
+      if (!items) return false
+      return items.some((d) => d.processing_status === 'queued' || d.processing_status === 'parsing') ? 2500 : false
     },
   })
 }
 
 export function useUploadDocuments(projectId: string) {
-  const queryClient = useQueryClient()
+  const qc = useQueryClient()
   return useMutation({
     mutationFn: (files: File[]) => documentsApi.upload(projectId, files),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['documents', projectId] })
+      qc.invalidateQueries({ queryKey: ['documents', projectId] })
+      qc.invalidateQueries({ queryKey: ['project', projectId] })
     },
   })
 }
 
 export function useDeleteDocument(projectId: string) {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: (documentId: string) => documentsApi.delete(projectId, documentId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['documents', projectId] })
-    },
-  })
+  return useMutation({ mutationFn: (documentId: string) => documentsApi.delete(projectId, documentId) })
 }

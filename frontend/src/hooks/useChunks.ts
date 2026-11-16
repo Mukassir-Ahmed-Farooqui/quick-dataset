@@ -1,56 +1,44 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import { chunksApi, type ChunkGeneratePayload, type ChunkPreviewPayload } from '@/api/chunks'
+import { patchIds, patchPagedLists, restore } from '@/lib/optimistic'
+import type { ChunkOut } from '@/types/api'
 
 interface UseChunksOptions {
   documentId?: string
   page?: number
   pageSize?: number
-  search?: string
+  enabled?: boolean
 }
 
 export function useChunks(projectId: string, options: UseChunksOptions = {}) {
-  const { documentId, page = 1, pageSize = 50, search } = options
+  const { documentId, page = 1, pageSize = 50, enabled = true } = options
   return useQuery({
-    queryKey: ['chunks', projectId, documentId, { search }, page, pageSize],
+    queryKey: ['chunks', projectId, documentId, page, pageSize],
     queryFn: () => chunksApi.list(projectId, documentId, page, pageSize),
-    enabled: !!projectId,
-    refetchInterval: 5000,
+    enabled: !!projectId && enabled,
+    placeholderData: keepPreviousData,
   })
 }
 
 export function useChunkPreview(projectId: string) {
-  return useMutation({
-    mutationFn: (data: ChunkPreviewPayload) => chunksApi.preview(projectId, data),
-  })
+  return useMutation({ mutationFn: (data: ChunkPreviewPayload) => chunksApi.preview(projectId, data) })
 }
 
 export function useGenerateChunks(projectId: string) {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: (data: ChunkGeneratePayload) => chunksApi.generate(projectId, data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['chunks', projectId] })
-    },
-  })
+  return useMutation({ mutationFn: (data: ChunkGeneratePayload) => chunksApi.generate(projectId, data) })
 }
 
 export function useUpdateChunk(projectId: string) {
-  const queryClient = useQueryClient()
+  const qc = useQueryClient()
+  const key = ['chunks', projectId]
   return useMutation({
-    mutationFn: ({ chunkId, content }: { chunkId: string; content: string }) =>
-      chunksApi.update(projectId, chunkId, content),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['chunks', projectId] })
-    },
+    mutationFn: ({ chunkId, content }: { chunkId: string; content: string }) => chunksApi.update(projectId, chunkId, content),
+    onMutate: ({ chunkId, content }) => patchPagedLists<ChunkOut>(qc, key, patchIds([chunkId], { content })),
+    onError: (_e, _v, snap) => restore(qc, snap),
+    onSettled: () => qc.invalidateQueries({ queryKey: key }),
   })
 }
 
 export function useDeleteChunk(projectId: string) {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: (chunkId: string) => chunksApi.delete(projectId, chunkId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['chunks', projectId] })
-    },
-  })
+  return useMutation({ mutationFn: (chunkId: string) => chunksApi.delete(projectId, chunkId) })
 }
