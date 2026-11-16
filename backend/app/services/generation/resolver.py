@@ -164,3 +164,24 @@ DEFAULT_MODELS: dict[str, str] = {
 
 def default_model_for(provider: Optional[str]) -> str:
     return DEFAULT_MODELS.get((provider or "").lower(), "gpt-4o-mini")
+
+
+def resolve_provider_name(
+    db: Session,
+    project_id: str,
+    user_id: str,
+    llm_key_id: Optional[str] = None,
+    fallback: str = "openai",
+) -> str:
+    """Provider of the key a request would use (for estimates / default
+    model choice). Never raises: falls back to ``fallback``."""
+    try:
+        return resolve_llm_config(db, project_id, user_id, llm_key_id=llm_key_id).provider or fallback
+    except Exception:
+        return fallback
+
+
+def resolve_model(model: Optional[str], provider: Optional[str]) -> str:
+    """Requested model, or the provider's default when none was given."""
+    model = (model or "").strip()
+    return model or default_model_for(provider)

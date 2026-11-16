@@ -10,3 +10,6 @@ passlib[bcrypt]
 bcrypt<4.0.0
 python-multipart
 pdfplumber
+httpx
+tiktoken
+langchain-text-splitters

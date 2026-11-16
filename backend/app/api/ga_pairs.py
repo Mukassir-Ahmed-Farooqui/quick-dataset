@@ -2,6 +2,7 @@
 import logging
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status
+from pydantic import Field
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, get_current_user
@@ -13,7 +14,11 @@ from app.repositories.task_repository import TaskRepository
 from app.services.generation.ga_generator import generate_ga_pairs
 from app.services.generation.estimator import estimate_ga_generation
 from app.services.generation.generation_run_service import GenerationRunService
-from app.services.generation.resolver import resolve_llm_config_with_model
+from app.services.generation.resolver import (
+    resolve_llm_config_with_model,
+    resolve_model,
+    resolve_provider_name,
+)
 from app.services.prompts.prompt_service import PromptService
 from app.schemas_extended import GAPairCreate, GAPairUpdate, GAPairOut
 from app.schemas import (
@@ -31,10 +36,17 @@ router = APIRouter(prefix="/projects/{project_id}/ga-pairs", tags=["ga-pairs"])
 
 # ── GA Generate Request ─────────────────────────────────────────────
 
+DEFAULT_GA_TEMPERATURE = 0.7
+DEFAULT_GA_MAX_TOKENS = 2048
+
+
 class GAGenerateRequest(GenerationConfigBase):
     document_ids: list[str]
-    pairs_per_document: int = 3
-    model: str = "gpt-4o-mini"
+    pairs_per_document: int = Field(default=3, ge=1, le=10)
+    # Defaults to a sensible model for the resolved key's provider.
+    model: Optional[str] = None
+    # Max concurrent LLM calls (documents in flight) for this run.
+    concurrency: Optional[int] = Field(default=None, ge=1, le=64)
 
 
 # ── Estimate ─────────────────────────────────────────────────────────
@@ -55,10 +67,12 @@ def estimate_ga_pairs(
         if not doc_repo.get_document(project_id, doc_id):
             raise not_found(f"Document {doc_id}")
 
+    provider = resolve_provider_name(db, project_id, str(current_user.id), data.llm_key_id)
     return estimate_ga_generation(
-        document_count=len(data.document_ids) * data.pairs_per_document,
-        provider="",
-        model=data.model,
+        document_count=len(set(data.document_ids)),
+        provider=provider,
+        model=resolve_model(data.model, provider),
+        pairs_per_document=data.pairs_per_document,
     )
 
 
@@ -90,19 +104,23 @@ async def generate_ga_pairs_endpoint(
             raise bad_request(f"Document '{doc.filename}' is not yet parsed (status: {doc.processing_status})")
 
     # Resolve LLM config synchronously to fail fast if no key configured
+    temperature = DEFAULT_GA_TEMPERATURE if data.temperature_override is None else data.temperature_override
+    max_tokens = data.max_tokens_override or DEFAULT_GA_MAX_TOKENS
     try:
-        resolve_llm_config_with_model(
+        config = resolve_llm_config_with_model(
             db, project_id, str(current_user.id),
-            model=data.model,
+            model=data.model or "",
             llm_key_id=data.llm_key_id,
-            temperature=data.temperature_override or 0.7,
-            max_tokens=data.max_tokens_override or 2048,
+            temperature=temperature,
+            max_tokens=max_tokens,
         )
     except Exception as e:
         raise bad_request(f"Cannot start generation: {str(e)}", "LLM_CONFIG_FAILED")
+    model = resolve_model(data.model, config.provider)
+    document_ids = list(dict.fromkeys(data.document_ids))  # de-duplicate, keep order
 
     # Create GenerationRun + Task synchronously so frontend gets real IDs
-    total_expected = len(data.document_ids) * data.pairs_per_document
+    total_expected = len(document_ids) * data.pairs_per_document
 
     prompt_svc = PromptService(db)
     prompt_out = prompt_svc.get_active_prompt(project_id, PromptType.ga)
@@ -111,7 +129,7 @@ async def generate_ga_pairs_endpoint(
     run = run_svc.create_run(
         project_id=project_id,
         run_type=GenerationRunType.ga_generation,
-        model_name=data.model,
+        model_name=model,
         prompt_type=PromptType.ga,
         prompt_version=prompt_out.version,
         total_items=total_expected,
@@ -121,7 +139,7 @@ async def generate_ga_pairs_endpoint(
     task = task_repo.create_task(
         project_id=project_id,
         task_type="ga-generation",
-        total_count=len(data.document_ids),
+        total_count=len(document_ids),
         generation_run_id=str(run.id),
     )
 
@@ -134,14 +152,15 @@ async def generate_ga_pairs_endpoint(
                 db=bg_db,
                 project_id=project_id,
                 user_id=str(current_user.id),
-                document_ids=data.document_ids,
+                document_ids=document_ids,
                 task_id=str(task.id),
                 generation_run_id=str(run.id),
                 pairs_per_document=data.pairs_per_document,
                 llm_key_id=data.llm_key_id,
-                model=data.model,
-                temperature=data.temperature_override or 0.7,
-                max_tokens=data.max_tokens_override or 2048,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                concurrency=data.concurrency,
             )
             logger.info(
                 "GA generation complete | task=%s run=%s",

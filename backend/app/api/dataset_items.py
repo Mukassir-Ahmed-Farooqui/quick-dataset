@@ -29,6 +29,23 @@ from app.schemas_extended import (
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_ANSWER_TEMPERATURE = 0.3
+DEFAULT_ANSWER_MAX_TOKENS = 4096
+
+
+def _supported_kwargs(func, kwargs: dict) -> dict:
+    """Drop optional kwargs the generator does not accept (yet) and any
+    that were not set, so the endpoint works with old and new
+    ``generate_answers`` signatures."""
+    import inspect
+    try:
+        params = inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        return {}
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return {k: v for k, v in kwargs.items() if v is not None}
+    return {k: v for k, v in kwargs.items() if k in params and v is not None}
+
 router = APIRouter(prefix="/projects/{project_id}/dataset-items", tags=["dataset-items"])
 
 
@@ -45,14 +62,13 @@ def estimate_answers(
     if not data.question_ids:
         raise bad_request("At least one question_id is required")
 
-    from app.repositories.llm_key_repository import LLMKeyRepository
-    key_repo = LLMKeyRepository(db)
-    key = key_repo.get_default_key(str(current_user.id))
-    provider = key.provider.value if key else "openai"
+    from app.services.generation.resolver import resolve_model, resolve_provider_name
+    provider = resolve_provider_name(db, project_id, str(current_user.id), data.llm_key_id)
 
     return estimate_answer_generation(
-        question_count=len(data.question_ids),
+        question_count=len(set(data.question_ids)),
         provider=provider,
+        model=resolve_model(data.model, provider),
     )
 
 
@@ -82,17 +98,28 @@ async def generate_answers_endpoint(
             raise not_found(f"Question {qid}")
 
     # Resolve LLM config synchronously to fail fast if no key configured
-    from app.services.generation.resolver import resolve_llm_config_with_model
+    from app.services.generation.resolver import resolve_llm_config_with_model, resolve_model
+    temperature = (
+        DEFAULT_ANSWER_TEMPERATURE if data.temperature_override is None else data.temperature_override
+    )
+    max_tokens = data.max_tokens_override or DEFAULT_ANSWER_MAX_TOKENS
     try:
-        resolve_llm_config_with_model(
+        config = resolve_llm_config_with_model(
             db, project_id, str(current_user.id),
-            model="gpt-4o-mini",
+            model=data.model or "",
             llm_key_id=data.llm_key_id,
-            temperature=data.temperature_override or 0.7,
-            max_tokens=data.max_tokens_override or 4096,
+            temperature=temperature,
+            max_tokens=max_tokens,
         )
     except Exception as e:
         raise bad_request(f"Cannot start generation: {str(e)}", "LLM_CONFIG_FAILED")
+    model = resolve_model(data.model, config.provider)
+    optional_kwargs = _supported_kwargs(generate_answers, {
+        "concurrency": getattr(data, "concurrency", None),
+        "include_cot": getattr(data, "include_cot", None),
+        "evaluate": getattr(data, "evaluate", None),
+        "min_quality_score": getattr(data, "min_quality_score", None),
+    })
 
     # Create GenerationRun + Task synchronously so frontend gets real IDs
     from app.models import GenerationRunType, PromptType
@@ -107,7 +134,7 @@ async def generate_answers_endpoint(
     run = run_svc.create_run(
         project_id=project_id,
         run_type=GenerationRunType.answer_generation,
-        model_name="gpt-4o-mini",
+        model_name=model,
         dataset_type=DatasetTypeEnum(data.dataset_type),
         prompt_type=PromptType.answer,
         prompt_version=prompt_out.version,
@@ -134,11 +161,12 @@ async def generate_answers_endpoint(
                 question_ids=data.question_ids,
                 dataset_type=DatasetTypeEnum(data.dataset_type),
                 llm_key_id=data.llm_key_id,
-                model="gpt-4o-mini",
-                temperature=data.temperature_override or 0.7,
-                max_tokens=data.max_tokens_override or 4096,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
                 existing_run_id=str(run.id),
                 existing_task_id=str(task.id),
+                **optional_kwargs,
             )
             logger.info(
                 "Answer generation complete | task=%s run=%s",
