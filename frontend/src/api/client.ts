@@ -1,4 +1,4 @@
-import axios, { AxiosError } from 'axios'
+import axios, { AxiosError, type InternalAxiosRequestConfig } from 'axios'
 import { config } from '@/lib/config'
 import { getAccessToken, getRefreshToken, setTokens, clearTokens } from '@/lib/token'
 
@@ -40,8 +40,8 @@ export class ApiError extends Error {
 // Queue state for token refresh
 let isRefreshing = false
 let failedQueue: Array<{
-  resolve: (value?: any) => void
-  reject: (reason?: any) => void
+  resolve: (value?: unknown) => void
+  reject: (reason?: unknown) => void
 }> = []
 
 const processQueue = (error: Error | null, token: string | null = null) => {
@@ -59,7 +59,7 @@ const processQueue = (error: Error | null, token: string | null = null) => {
 apiClient.interceptors.response.use(
   (response) => response,
   (error: AxiosError<{ detail?: unknown; message?: string }>) => {
-    const originalRequest = error.config as any
+    const originalRequest = error.config as InternalAxiosRequestConfig & { _retry?: boolean }
 
     if (error.response?.status === 401) {
       // Prevent infinite loops if the refresh itself or login fails

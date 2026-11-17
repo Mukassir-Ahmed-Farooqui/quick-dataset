@@ -1,31 +1,85 @@
 import { useState } from 'react'
-import { Plug, Loader2, Trash2, RefreshCw, Edit2, CheckCircle2, XCircle, HelpCircle } from 'lucide-react'
-import { motion } from 'framer-motion'
+import { useQueryClient } from '@tanstack/react-query'
+import { m } from 'framer-motion'
+import { CheckCircle2, CircleDashed, Pencil, Plug, Plus, RefreshCw, Trash2, XCircle } from 'lucide-react'
 import PageHeader from '@/components/common/PageHeader'
 import EmptyState from '@/components/common/EmptyState'
 import ErrorState from '@/components/common/ErrorState'
-import LoadingState from '@/components/common/LoadingState'
+import { GridSkeleton } from '@/components/common/LoadingState'
 import PaginationControls from '@/components/common/PaginationControls'
+import ConfirmDialog from '@/components/common/ConfirmDialog'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { Card, CardContent } from '@/components/ui/card'
-import { Separator } from '@/components/ui/separator'
-import ConfirmDialog from '@/components/common/ConfirmDialog'
+import { Tooltip } from '@/components/ui/tooltip'
 import { useProviders, useDeleteProvider, useTestProvider } from '@/hooks/useProviders'
-import { toast } from '@/lib/toast'
-import { stagger, fadeUp } from '@/lib/animations'
-import AddKeyDialog from '@/features/providers/components/AddKeyDialog'
-import EditKeyDialog from '@/features/providers/components/EditKeyDialog'
+import { toast, toastError } from '@/lib/toast'
+import { fadeUp, stagger } from '@/lib/animations'
+import { plural, timeAgo } from '@/lib/format'
+import AddKeyDialog from '../components/AddKeyDialog'
+import EditKeyDialog from '../components/EditKeyDialog'
+import { PROVIDERS, providerLabel } from '../components/providerMeta'
 import type { LLMKeyOut } from '@/types/api'
 
-const providerIcons: Record<string, string> = {
-  openai: 'OpenAI',
-  openrouter: 'OpenRouter',
-  groq: 'Groq',
-  gemini: 'Gemini',
+function ValidityBadge({ k }: { k: LLMKeyOut }) {
+  if (k.is_valid === true) return <Badge variant="success" dot>Valid</Badge>
+  if (k.is_valid === false) return <Badge variant="destructive" dot>Invalid</Badge>
+  return <Badge variant="outline">Untested</Badge>
+}
+
+function KeyCard({
+  k,
+  testing,
+  onTest,
+  onEdit,
+  onDelete,
+}: {
+  k: LLMKeyOut
+  testing: boolean
+  onTest: () => void
+  onEdit: () => void
+  onDelete: () => void
+}) {
+  const StatusIcon = k.is_valid === true ? CheckCircle2 : k.is_valid === false ? XCircle : CircleDashed
+  return (
+    <m.li variants={fadeUp} className="flex flex-col bg-bg">
+      <div className="flex items-start justify-between gap-3 p-4">
+        <div className="min-w-0">
+          <p className="eyebrow">{providerLabel(k.provider)}</p>
+          <p className="mt-1 truncate font-display text-sm font-bold">{k.name}</p>
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {k.is_default && <Badge variant="accent">Default</Badge>}
+          <ValidityBadge k={k} />
+        </div>
+      </div>
+      <div className="mx-4 border border-line-hair bg-bg-subtle px-3 py-2 font-mono text-xs text-fg-secondary">{k.masked_key}</div>
+      <div className="flex items-center gap-1.5 px-4 py-3 font-mono text-[11px] text-fg-muted">
+        <StatusIcon
+          className={k.is_valid === true ? 'size-3.5 text-success' : k.is_valid === false ? 'size-3.5 text-danger' : 'size-3.5'}
+          strokeWidth={1.75}
+        />
+        {k.last_validated_at ? `Tested ${timeAgo(k.last_validated_at)}` : 'Never tested'}
+        <span className="text-fg-subtle">· added {timeAgo(k.created_at)}</span>
+      </div>
+      <div className="mt-auto flex items-center gap-1 border-t border-line px-2 py-2">
+        <Button variant="ghost" size="xs" onClick={onTest} loading={testing}>
+          {!testing && <RefreshCw />} Test
+        </Button>
+        <Button variant="ghost" size="xs" onClick={onEdit}>
+          <Pencil /> Edit
+        </Button>
+        <Tooltip content="Delete key">
+          <Button variant="ghost" size="icon-sm" onClick={onDelete} aria-label={`Delete ${k.name}`} className="ml-auto hover:text-danger">
+            <Trash2 />
+          </Button>
+        </Tooltip>
+      </div>
+    </m.li>
+  )
 }
 
 export default function ProvidersPage() {
+  const qc = useQueryClient()
   const [addOpen, setAddOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<LLMKeyOut | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<LLMKeyOut | null>(null)
@@ -36,24 +90,23 @@ export default function ProvidersPage() {
   const deleteProvider = useDeleteProvider()
   const testProvider = useTestProvider()
   const keys = data?.items ?? []
-
-  const handlePageSizeChange = (size: number) => {
-    setPageSize(size)
-    setPage(1)
-  }
+  const total = data?.pagination.total_items ?? 0
+  const valid = keys.filter((k) => k.is_valid === true).length
 
   const handleTest = async (key: LLMKeyOut) => {
     setTestingId(key.id)
     try {
       const result = await testProvider.mutateAsync({ id: key.id })
       if (result.success) {
-        toast({ title: `${providerIcons[key.provider] || key.provider} connection OK`, description: `Latency: ${result.latency_ms}ms` })
+        toast({
+          title: `${providerLabel(key.provider)} connection OK`,
+          description: [result.model, result.latency_ms != null && `${result.latency_ms} ms`].filter(Boolean).join(' · '),
+        })
       } else {
-        toast({ title: 'Connection failed', description: result.error || 'Unknown error', variant: 'destructive' })
+        toast({ title: 'Connection failed', description: result.error || 'The provider rejected the key.', variant: 'destructive' })
       }
-      refetch()
     } catch (err) {
-      toast({ title: 'Test failed', description: err instanceof Error ? err.message : 'Unknown error', variant: 'destructive' })
+      toastError('Test failed', err, () => void handleTest(key))
     } finally {
       setTestingId(null)
     }
@@ -63,164 +116,92 @@ export default function ProvidersPage() {
     if (!deleteTarget) return
     try {
       await deleteProvider.mutateAsync(deleteTarget.id)
-      toast({ title: 'Key deleted', description: `${deleteTarget.name} has been removed.` })
+      await qc.invalidateQueries({ queryKey: ['providers'] })
+      toast({ title: 'Key deleted', description: `${deleteTarget.name} was removed.` })
       setDeleteTarget(null)
     } catch (err) {
-      toast({
-        title: 'Failed to delete key',
-        description: err instanceof Error ? err.message : 'Please try again.',
-        variant: 'destructive',
-      })
+      toastError('Could not delete key', err)
     }
   }
 
-  if (isLoading) return <LoadingState />
-
   return (
-    <motion.div variants={stagger} initial="hidden" animate="visible" className="space-y-6">
-      <motion.div variants={fadeUp}>
+    <m.div variants={stagger} initial="hidden" animate="visible" className="space-y-6">
+      <m.div variants={fadeUp}>
         <PageHeader
+          eyebrow="Settings"
           title="Providers"
-          description={keys.length > 0 ? `${keys.length} API key${keys.length !== 1 ? 's' : ''} configured` : 'Manage your LLM API keys.'}
+          description={
+            total > 0
+              ? `${plural(total, 'API key')}${valid ? ` · ${valid} valid` : ''}. Used to generate GA pairs, questions and answers.`
+              : 'LLM API keys used to generate GA pairs, questions and answers.'
+          }
           action={
-            <Button onClick={() => setAddOpen(true)}>
-              <Plug className="h-4 w-4 mr-2" />
-              Add API Key
-            </Button>
+            total > 0 && (
+              <Button onClick={() => setAddOpen(true)}>
+                <Plus /> Add API key
+              </Button>
+            )
           }
         />
-      </motion.div>
+      </m.div>
 
       {isError ? (
-        <motion.div variants={fadeUp}>
-          <ErrorState error={error} onRetry={refetch} />
-        </motion.div>
+        <ErrorState error={error} onRetry={() => void refetch()} />
+      ) : isLoading ? (
+        <GridSkeleton count={3} />
       ) : keys.length === 0 ? (
-        <motion.div variants={fadeUp}>
+        <m.div variants={fadeUp}>
           <EmptyState
             icon={Plug}
-            title="No API keys configured"
-            description="Add your first LLM provider key to enable generation. Supports OpenRouter, OpenAI, Groq, and Gemini."
+            title="No API keys yet"
+            description="Add a key from any supported provider. It's encrypted at rest and you can test it right after."
+            bullets={PROVIDERS.map((p) => p.label)}
             action={
-              <Button onClick={() => setAddOpen(true)}>Add API Key</Button>
+              <Button onClick={() => setAddOpen(true)}>
+                <Plus /> Add API key
+              </Button>
             }
           />
-        </motion.div>
+        </m.div>
       ) : (
-        <motion.div variants={stagger} className="space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {keys.map((key) => (
-            <motion.div key={key.id} variants={fadeUp} whileHover={{ y: -3, transition: { duration: 0.2 } }}>
-              <Card className="border border-hairline rounded-lg bg-canvas h-full">
-                <CardContent className="p-5 space-y-3">
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <div className="text-sm font-medium text-ink">{key.name}</div>
-                      <div className="text-xs text-muted mt-0.5">{providerIcons[key.provider] || key.provider}</div>
-                    </div>
-                    <Badge variant={key.is_valid === true ? 'success' : key.is_valid === false ? 'destructive' : 'outline'}>
-                      {key.is_valid === true ? 'Valid' : key.is_valid === false ? 'Invalid' : 'Untested'}
-                    </Badge>
-                  </div>
-
-                  <div className="font-mono text-xs text-muted bg-stone rounded-md px-3 py-2">
-                    {key.masked_key}
-                  </div>
-
-                  <div className="flex flex-col gap-1.5 text-xs text-muted">
-                    <div className="flex items-center gap-2">
-                      <span>Added {new Date(key.created_at).toLocaleDateString()}</span>
-                      {key.is_default && (
-                        <>
-                          <span>&middot;</span>
-                          <Badge variant="secondary" className="text-[10px]">Default</Badge>
-                        </>
-                      )}
-                    </div>
-                    {key.last_validated_at ? (
-                      <div className="flex items-center gap-1.5">
-                        {key.is_valid === true ? (
-                          <CheckCircle2 className="h-3.5 w-3.5 text-success" />
-                        ) : key.is_valid === false ? (
-                          <XCircle className="h-3.5 w-3.5 text-error" />
-                        ) : (
-                          <HelpCircle className="h-3.5 w-3.5" />
-                        )}
-                        <span>
-                          Tested {new Date(key.last_validated_at).toLocaleDateString()}{' '}
-                          {new Date(key.last_validated_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                        </span>
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-1.5 text-body-muted">
-                        <HelpCircle className="h-3.5 w-3.5" />
-                        <span>Never tested</span>
-                      </div>
-                    )}
-                  </div>
-
-                  <Separator />
-
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setEditTarget(key)}
-                      className="flex-1"
-                    >
-                      <Edit2 className="h-3.5 w-3.5 mr-1.5" />
-                      Edit
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleTest(key)}
-                      disabled={testingId === key.id}
-                      className="flex-1"
-                    >
-                      {testingId === key.id ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />
-                      ) : (
-                        <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
-                      )}
-                      Test
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setDeleteTarget(key)}
-                      className="text-error hover:text-error"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            </motion.div>
-          ))}
-          </div>
+        <div className="border border-line">
+          <m.ul variants={stagger} className="grid gap-px bg-line sm:grid-cols-2 xl:grid-cols-3">
+            {keys.map((k) => (
+              <KeyCard
+                key={k.id}
+                k={k}
+                testing={testingId === k.id}
+                onTest={() => void handleTest(k)}
+                onEdit={() => setEditTarget(k)}
+                onDelete={() => setDeleteTarget(k)}
+              />
+            ))}
+          </m.ul>
           <PaginationControls
             meta={data?.pagination}
             page={page}
             pageSize={pageSize}
             onPageChange={setPage}
-            onPageSizeChange={handlePageSizeChange}
+            onPageSizeChange={(s) => {
+              setPageSize(s)
+              setPage(1)
+            }}
           />
-        </motion.div>
+        </div>
       )}
 
       <AddKeyDialog open={addOpen} onOpenChange={setAddOpen} />
       <EditKeyDialog keyData={editTarget} open={!!editTarget} onOpenChange={(o) => !o && setEditTarget(null)} />
-
       <ConfirmDialog
         open={!!deleteTarget}
         onOpenChange={(o) => !o && setDeleteTarget(null)}
-        title="Delete API Key"
-        message={`Remove "${deleteTarget?.name}"? This cannot be undone.`}
-        confirmLabel="Delete"
+        title="Delete API key"
+        message={`Remove "${deleteTarget?.name}"? Projects using it as their default will need another key. This can't be undone.`}
+        confirmLabel="Delete key"
         variant="destructive"
-        onConfirm={handleDelete}
+        loading={deleteProvider.isPending}
+        onConfirm={() => void handleDelete()}
       />
-    </motion.div>
+    </m.div>
   )
 }

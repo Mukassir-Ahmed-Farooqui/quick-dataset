@@ -12,6 +12,7 @@ export interface GAPairValues {
   audience_description: string
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export const toUpdate = (v: GAPairValues): GAPairUpdate => ({
   genre_title: v.genre_title.trim(),
   genre_description: v.genre_description.trim() || undefined,

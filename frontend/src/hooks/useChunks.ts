@@ -33,7 +33,7 @@ export function useUpdateChunk(projectId: string) {
   const key = ['chunks', projectId]
   return useMutation({
     mutationFn: ({ chunkId, content }: { chunkId: string; content: string }) => chunksApi.update(projectId, chunkId, content),
-    onMutate: ({ chunkId, content }) => patchPagedLists<ChunkOut>(qc, key, patchIds([chunkId], { content })),
+    onMutate: ({ chunkId, content }) => patchPagedLists<ChunkOut>(qc, key, patchIds<ChunkOut>([chunkId], { content })),
     onError: (_e, _v, snap) => restore(qc, snap),
     onSettled: () => qc.invalidateQueries({ queryKey: key }),
   })

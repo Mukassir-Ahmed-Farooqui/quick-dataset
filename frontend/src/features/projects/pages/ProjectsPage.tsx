@@ -1,99 +1,148 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { FolderOpen, Plus } from 'lucide-react'
-import { motion } from 'framer-motion'
+import { Link, useNavigate } from 'react-router-dom'
+import { m } from 'framer-motion'
+import { FolderOpen, Plus, Search } from 'lucide-react'
 import PageHeader from '@/components/common/PageHeader'
-import DataTable from '@/components/common/DataTable'
 import EmptyState from '@/components/common/EmptyState'
 import ErrorState from '@/components/common/ErrorState'
 import PaginationControls from '@/components/common/PaginationControls'
+import { ListSkeleton } from '@/components/common/LoadingState'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { useProjects } from '@/hooks/useProjects'
-import { stagger, fadeUp } from '@/lib/animations'
-import type { ProjectListItemOut } from '@/types/api'
-
-const columns = [
-  { key: 'name', header: 'Name', render: (p: ProjectListItemOut) => <span className="font-medium text-ink">{p.name}</span> },
-  { key: 'status', header: 'Status', render: (p: ProjectListItemOut) => (
-    <Badge variant={p.status === 'active' ? 'success' : 'secondary'}>{p.status}</Badge>
-  )},
-  { key: 'documents', header: 'Documents', render: (p: ProjectListItemOut) => (
-    <span className="text-body-muted">{p.document_count}</span>
-  )},
-  { key: 'last_activity', header: 'Last Activity', render: (p: ProjectListItemOut) => (
-    <span className="text-body-muted">
-      {p.last_activity_at ? new Date(p.last_activity_at).toLocaleDateString() : 'Never'}
-    </span>
-  )},
-  { key: 'created', header: 'Created', render: (p: ProjectListItemOut) => (
-    <span className="text-body-muted text-sm">{new Date(p.created_at).toLocaleDateString()}</span>
-  )},
-]
+import { Input } from '@/components/ui/input'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { useProjects, prefetchProject } from '@/hooks/useProjects'
+import { useDebounce } from '@/hooks/useDebounce'
+import { fadeUp } from '@/lib/animations'
+import { plural, timeAgo } from '@/lib/format'
+import { prefetchPage } from '@/routes/pages'
 
 export default function ProjectsPage() {
   const navigate = useNavigate()
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
+  const [query, setQuery] = useState('')
+  const q = useDebounce(query, 150).trim().toLowerCase()
   const { data, isLoading, isError, error, refetch } = useProjects({ page, pageSize })
+
   const projects = data?.items ?? []
   const total = data?.pagination.total_items ?? 0
-  const errorMessage = error instanceof Error ? error.message : 'Failed to load projects'
+  const visible = q
+    ? projects.filter((p) => p.name.toLowerCase().includes(q) || (p.description ?? '').toLowerCase().includes(q))
+    : projects
 
-  const handlePageSizeChange = (size: number) => {
-    setPageSize(size)
-    setPage(1)
+  const open = (id: string) => navigate(`/projects/${id}`)
+  const warm = (id: string) => {
+    void prefetchProject(id)
+    prefetchPage('projectLayout')
+    prefetchPage('overview')
   }
 
   return (
-    <motion.div variants={stagger} initial="hidden" animate="visible" className="space-y-6">
-      <motion.div variants={fadeUp}>
-        <PageHeader
-          title="Projects"
-          description={total > 0 ? `${total} project${total !== 1 ? 's' : ''} total` : 'Manage your RAG pipeline projects.'}
+    <m.div variants={fadeUp} initial="hidden" animate="visible" className="space-y-6">
+      <PageHeader
+        eyebrow="Workspace"
+        title="Projects"
+        description={total > 0 ? `${plural(total, 'project')}. Each one turns its documents into a dataset.` : 'Each project turns its documents into a dataset.'}
+        action={
+          <Button asChild>
+            <Link to="/projects/new" onMouseEnter={() => prefetchPage('createProject')}>
+              <Plus /> New project
+            </Link>
+          </Button>
+        }
+      />
+
+      {isError ? (
+        <ErrorState error={error} onRetry={() => void refetch()} />
+      ) : isLoading ? (
+        <ListSkeleton rows={5} />
+      ) : projects.length === 0 ? (
+        <EmptyState
+          icon={FolderOpen}
+          title="No projects yet"
+          description="Create your first project to start building a dataset from your documents."
+          bullets={['Upload PDF, DOCX, Markdown or TXT', 'Generate questions and answers with your LLM key', 'Review, then export']}
           action={
-            <Button onClick={() => navigate('/projects/new')}>
-              <Plus className="h-4 w-4 mr-2" />
-              New Project
+            <Button asChild>
+              <Link to="/projects/new">
+                <Plus /> Create project
+              </Link>
             </Button>
           }
         />
-      </motion.div>
-
-      {isError ? (
-        <motion.div variants={fadeUp}>
-          <ErrorState error={error} onRetry={refetch} />
-        </motion.div>
-      ) : projects.length === 0 && !isLoading ? (
-        <motion.div variants={fadeUp}>
-          <EmptyState
-            icon={FolderOpen}
-            title="No projects yet"
-            description="Create your first project to start building datasets from your documents."
-            action={
-              <Button onClick={() => navigate('/projects/new')}>
-                Create Project
-              </Button>
-            }
-          />
-        </motion.div>
       ) : (
-        <motion.div variants={fadeUp} className="space-y-4">
-          <DataTable
-            columns={columns}
-            data={projects}
-            loading={isLoading}
-            onRowClick={(p) => navigate(`/projects/${p.id}`)}
-          />
+        <div className="border border-line">
+          <div className="flex items-center gap-3 border-b border-line px-3 py-2">
+            <Search className="size-3.5 shrink-0 text-fg-muted" />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Filter projects on this page…"
+              aria-label="Filter projects"
+              className="h-8 border-transparent px-0 hover:border-transparent focus:border-transparent dark:bg-transparent"
+            />
+            {q && <span className="shrink-0 font-mono text-[11px] text-fg-muted">{visible.length} match</span>}
+          </div>
+          <Table>
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                <TableHead>Name</TableHead>
+                <TableHead className="hidden sm:table-cell">Status</TableHead>
+                <TableHead className="text-right">Docs</TableHead>
+                <TableHead className="hidden text-right md:table-cell">Questions</TableHead>
+                <TableHead className="hidden text-right md:table-cell">Items</TableHead>
+                <TableHead className="hidden text-right lg:table-cell">Last activity</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {visible.length === 0 ? (
+                <TableRow className="hover:bg-transparent">
+                  <TableCell colSpan={6} className="py-10 text-center text-sm text-fg-muted">
+                    No projects match “{query}”.
+                  </TableCell>
+                </TableRow>
+              ) : (
+                visible.map((p) => (
+                  <TableRow
+                    key={p.id}
+                    tabIndex={0}
+                    className="cursor-pointer focus-visible:bg-bg-subtle focus-visible:outline-none"
+                    onClick={() => open(p.id)}
+                    onKeyDown={(e) => e.key === 'Enter' && open(p.id)}
+                    onMouseEnter={() => warm(p.id)}
+                    onFocus={() => warm(p.id)}
+                  >
+                    <TableCell className="max-w-0 sm:max-w-sm">
+                      <p className="truncate font-medium">{p.name}</p>
+                      {p.description && <p className="truncate text-xs text-fg-muted">{p.description}</p>}
+                    </TableCell>
+                    <TableCell className="hidden sm:table-cell">
+                      <Badge variant={p.status === 'active' ? 'success' : 'secondary'}>{p.status}</Badge>
+                    </TableCell>
+                    <TableCell className="num text-right text-fg-secondary">{p.document_count.toLocaleString()}</TableCell>
+                    <TableCell className="num hidden text-right text-fg-secondary md:table-cell">{p.question_count.toLocaleString()}</TableCell>
+                    <TableCell className="num hidden text-right text-fg-secondary md:table-cell">{p.dataset_item_count.toLocaleString()}</TableCell>
+                    <TableCell className="hidden text-right font-mono text-[11px] text-fg-muted lg:table-cell">
+                      {p.last_activity_at ? timeAgo(p.last_activity_at) : 'Never'}
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
           <PaginationControls
             meta={data?.pagination}
             page={page}
             pageSize={pageSize}
             onPageChange={setPage}
-            onPageSizeChange={handlePageSizeChange}
+            onPageSizeChange={(s) => {
+              setPageSize(s)
+              setPage(1)
+            }}
           />
-        </motion.div>
+        </div>
       )}
-    </motion.div>
+    </m.div>
   )
 }
