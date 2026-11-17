@@ -3,7 +3,8 @@ import httpx
 from typing import List, Dict
 from app.services.llm.base import BaseLLMProvider
 from app.services.llm.http_client import get_http_client
-from app.schemas_extended import LLMResponse, ProviderTestResult
+from app.schemas_extended import LLMResponse, ProviderTestResult, ModelInfo
+from app.services.llm import model_catalog
 
 class OpenRouterProvider(BaseLLMProvider):
     def __init__(self, api_key: str):
@@ -42,6 +43,13 @@ class OpenRouterProvider(BaseLLMProvider):
             completion_tokens=data.get("usage", {}).get("completion_tokens", 0),
             total_tokens=data.get("usage", {}).get("total_tokens", 0)
         )
+
+    async def list_models(self) -> List[ModelInfo]:
+        client = get_http_client()
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        response = await client.get(f"{self.base_url}/models", headers=headers)
+        response.raise_for_status()
+        return model_catalog.parse_openai_compatible(response.json(), "openrouter")
 
     async def stream(
         self,

@@ -31,6 +31,7 @@ from app.models import LLMUsageLog, LLMProvider
 from app.schemas_extended import LLMResponse
 from app.services.generation.resolver import ResolvedLLMConfig
 from app.services.llm.provider_factory import ProviderFactory
+from app.services.llm.model_catalog import is_model_unavailable_error
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,45 @@ DEFAULT_CALL_TIMEOUT = float(os.getenv("LLM_CALL_TIMEOUT", "120"))
 
 
 async def tracked_complete(
+    db: Session,
+    project_id: str,
+    config: ResolvedLLMConfig,
+    messages: list[dict],
+    model: str,
+    *,
+    temperature: float = 0.7,
+    max_tokens: int = 4096,
+    task_id: Optional[str] = None,
+    usage_sink: Optional[list] = None,
+    timeout: Optional[float] = None,
+) -> LLMResponse:
+    """Tracked LLM call that falls back to the provider default model when
+    the requested model is retired / unknown (e.g. a key's saved model that
+    the provider has since decommissioned). Each attempt logs its own usage
+    row; the fallback is logged as a warning.
+    """
+    kwargs = dict(
+        temperature=temperature, max_tokens=max_tokens, task_id=task_id,
+        usage_sink=usage_sink, timeout=timeout,
+    )
+    try:
+        return await _tracked_complete_once(db, project_id, config, messages, model, **kwargs)
+    except Exception as exc:
+        # Local import: resolver imports nothing from here, but keep the
+        # dependency direction explicit.
+        from app.services.generation.resolver import default_model_for
+        fallback = default_model_for(config.provider)
+        if not model or model == fallback or not is_model_unavailable_error(exc):
+            raise
+        logger.warning(
+            "Model %r is unavailable on %s (likely retired); falling back to %r. "
+            "Pick a new model for this key on the Providers page.",
+            model, config.provider, fallback,
+        )
+        return await _tracked_complete_once(db, project_id, config, messages, fallback, **kwargs)
+
+
+async def _tracked_complete_once(
     db: Session,
     project_id: str,
     config: ResolvedLLMConfig,

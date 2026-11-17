@@ -165,6 +165,9 @@ class UserLLMKey(Base):
     is_default = Column(Boolean, default=False, nullable=False)
     last_validated_at = Column(DateTime, nullable=True)
     is_valid = Column(Boolean, nullable=True)  # null = never tested
+    # Model the user picked for this key from the provider's live catalog.
+    # null = use the provider default (resolver.DEFAULT_MODELS).
+    selected_model = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     user = relationship("User", back_populates="llm_keys")

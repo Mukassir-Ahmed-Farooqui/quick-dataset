@@ -41,6 +41,7 @@ class ResolvedLLMConfig:
     llm_key_id: str         # the resolved key's id (for usage logging)
     temperature: float      # effective temperature
     max_tokens: int         # effective max_tokens
+    selected_model: Optional[str] = None  # model the user picked for this key
 
 
 def resolve_llm_config(
@@ -123,6 +124,7 @@ def resolve_llm_config(
         llm_key_id=str(db_key.id),
         temperature=temperature,
         max_tokens=max_tokens,
+        selected_model=(getattr(db_key, "selected_model", None) or None),
     )
 
 
@@ -147,7 +149,9 @@ def resolve_llm_config_with_model(
         temperature=temperature,
         max_tokens=max_tokens,
     )
-    config.model = model
+    # An explicit request model wins; otherwise the key's picked model;
+    # otherwise the provider default.
+    config.model = resolve_model(model, config.provider, config.selected_model)
     return config
 
 
@@ -157,13 +161,27 @@ def resolve_llm_config_with_model(
 DEFAULT_MODELS: dict[str, str] = {
     "openai": "gpt-4o-mini",
     "openrouter": "openai/gpt-4o-mini",
-    "groq": "llama-3.3-70b-versatile",
+    # llama-3.3-70b-versatile was retired by Groq on 2026-08-16.
+    "groq": "openai/gpt-oss-120b",
     "gemini": "gemini-2.0-flash",
 }
 
 
 def default_model_for(provider: Optional[str]) -> str:
     return DEFAULT_MODELS.get((provider or "").lower(), "gpt-4o-mini")
+
+
+def resolve_selected_model(
+    db: Session,
+    project_id: str,
+    user_id: str,
+    llm_key_id: Optional[str] = None,
+) -> Optional[str]:
+    """Model picked on the key a request would use (for estimates). Never raises."""
+    try:
+        return resolve_llm_config(db, project_id, user_id, llm_key_id=llm_key_id).selected_model
+    except Exception:
+        return None
 
 
 def resolve_provider_name(
@@ -181,7 +199,11 @@ def resolve_provider_name(
         return fallback
 
 
-def resolve_model(model: Optional[str], provider: Optional[str]) -> str:
-    """Requested model, or the provider's default when none was given."""
+def resolve_model(
+    model: Optional[str],
+    provider: Optional[str],
+    selected_model: Optional[str] = None,
+) -> str:
+    """Requested model, else the key's selected model, else the provider default."""
     model = (model or "").strip()
-    return model or default_model_for(provider)
+    return model or (selected_model or "").strip() or default_model_for(provider)

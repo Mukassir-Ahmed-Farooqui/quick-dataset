@@ -16,6 +16,7 @@ import { toast } from '@/lib/toast'
 import { stagger, fadeUp } from '@/lib/animations'
 import AddKeyDialog from '@/features/providers/components/AddKeyDialog'
 import EditKeyDialog from '@/features/providers/components/EditKeyDialog'
+import ModelPicker from '@/features/providers/components/ModelPicker'
 import type { LLMKeyOut } from '@/types/api'
 
 const providerIcons: Record<string, string> = {
@@ -46,8 +47,10 @@ export default function ProvidersPage() {
     setTestingId(key.id)
     try {
       const result = await testProvider.mutateAsync({ id: key.id })
-      if (result.success) {
-        toast({ title: `${providerIcons[key.provider] || key.provider} connection OK`, description: `Latency: ${result.latency_ms}ms` })
+      if (result.success && result.warning) {
+        toast({ title: `${providerIcons[key.provider] || key.provider} works, but check the model`, description: result.warning, variant: 'destructive' })
+      } else if (result.success) {
+        toast({ title: `${providerIcons[key.provider] || key.provider} connection OK`, description: `${result.model} · ${result.latency_ms}ms` })
       } else {
         toast({ title: 'Connection failed', description: result.error || 'Unknown error', variant: 'destructive' })
       }
@@ -126,6 +129,8 @@ export default function ProvidersPage() {
                   <div className="font-mono text-xs text-muted bg-stone rounded-md px-3 py-2">
                     {key.masked_key}
                   </div>
+
+                  <ModelPicker keyData={key} />
 
                   <div className="flex flex-col gap-1.5 text-xs text-muted">
                     <div className="flex items-center gap-2">

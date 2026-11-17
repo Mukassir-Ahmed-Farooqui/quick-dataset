@@ -69,7 +69,8 @@ class LLMKeyRepository:
                     created_at=key.created_at,
                     masked_key=masked_key,
                     is_valid=key.is_valid,
-                    last_validated_at=key.last_validated_at
+                    last_validated_at=key.last_validated_at,
+                    selected_model=key.selected_model,
                 )
             )
         return result
@@ -94,7 +95,8 @@ class LLMKeyRepository:
             encrypted_api_key=encrypted_key,
             is_default=data.is_default,
             is_valid=None,
-            last_validated_at=None
+            last_validated_at=None,
+            selected_model=(data.selected_model or None),
         )
         self.db.add(db_key)
         self.db.commit()
@@ -108,7 +110,8 @@ class LLMKeyRepository:
             created_at=db_key.created_at,
             masked_key=self._mask_key(data.api_key),
             is_valid=db_key.is_valid,
-            last_validated_at=db_key.last_validated_at
+            last_validated_at=db_key.last_validated_at,
+            selected_model=db_key.selected_model,
         )
 
     def update_validation_status(self, user_id: str, key_id: str, is_valid: bool) -> None:
@@ -136,6 +139,9 @@ class LLMKeyRepository:
             db_key.encrypted_api_key = encrypt(data.api_key)
             db_key.is_valid = None          # reset — new key needs re-testing
             db_key.last_validated_at = None
+
+        if data.selected_model is not None:
+            db_key.selected_model = data.selected_model.strip() or None
 
         if data.is_default is not None:
             if data.is_default:
@@ -166,6 +172,7 @@ class LLMKeyRepository:
             is_valid=db_key.is_valid,
             last_validated_at=db_key.last_validated_at,
             created_at=db_key.created_at,
+            selected_model=db_key.selected_model,
         )
 
     def delete_key(self, user_id: str, key_id: str) -> bool:

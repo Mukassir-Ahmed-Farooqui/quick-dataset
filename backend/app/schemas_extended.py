@@ -18,6 +18,14 @@ class LLMResponse(BaseModel):
     total_tokens: int
 
 
+class ModelInfo(BaseModel):
+    """One model a provider key can use (from the provider's live catalog)."""
+    id: str
+    name: Optional[str] = None
+    context_window: Optional[int] = None
+    owned_by: Optional[str] = None
+
+
 class ProviderTestResult(BaseModel):
     success: bool
     provider: str

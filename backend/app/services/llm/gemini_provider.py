@@ -3,7 +3,8 @@ import httpx
 from typing import List, Dict
 from app.services.llm.base import BaseLLMProvider
 from app.services.llm.http_client import get_http_client
-from app.schemas_extended import LLMResponse, ProviderTestResult
+from app.schemas_extended import LLMResponse, ProviderTestResult, ModelInfo
+from app.services.llm import model_catalog
 
 
 class GeminiProvider(BaseLLMProvider):
@@ -48,6 +49,23 @@ class GeminiProvider(BaseLLMProvider):
             completion_tokens=usage.get("candidatesTokenCount", 0),
             total_tokens=usage.get("totalTokenCount", 0),
         )
+
+    async def list_models(self) -> List[ModelInfo]:
+        client = get_http_client()
+        models: list[dict] = []
+        page_token = None
+        for _ in range(10):  # paginate defensively
+            params = {"key": self.api_key, "pageSize": 1000}
+            if page_token:
+                params["pageToken"] = page_token
+            response = await client.get(f"{self.base_url}/models", params=params)
+            response.raise_for_status()
+            data = response.json()
+            models.extend(data.get("models") or [])
+            page_token = data.get("nextPageToken")
+            if not page_token:
+                break
+        return model_catalog.parse_gemini({"models": models})
 
     async def stream(self, messages: List[Dict[str, str]], model: str):
         raise NotImplementedError("Streaming not yet implemented")

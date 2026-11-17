@@ -1,5 +1,5 @@
 import { apiClient } from './client'
-import type { LLMKeyCreate, LLMKeyUpdate, LLMKeyOut, LLMKeyTestResult, PageEnvelope } from '@/types/api'
+import type { LLMKeyCreate, LLMKeyUpdate, LLMKeyOut, LLMKeyTestResult, LLMKeyModelsOut, PageEnvelope } from '@/types/api'
 
 export const providersApi = {
   list: (page = 1, pageSize = 20) =>
@@ -13,6 +13,11 @@ export const providersApi = {
 
   update: (id: string, data: LLMKeyUpdate) =>
     apiClient.patch<LLMKeyOut>(`/providers/${id}`, data).then(r => r.data),
+
+  models: (id: string, refresh = false) =>
+    apiClient
+      .get<LLMKeyModelsOut>(`/providers/${id}/models`, { params: refresh ? { refresh: true } : undefined })
+      .then(r => r.data),
 
   test: (id: string, model?: string) =>
     apiClient.post<LLMKeyTestResult>(`/providers/${id}/test`, null, { params: { model } }).then(r => r.data),

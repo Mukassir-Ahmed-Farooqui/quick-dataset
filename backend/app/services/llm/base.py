@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import List, Dict
-from app.schemas_extended import LLMResponse, ProviderTestResult
+from app.schemas_extended import LLMResponse, ProviderTestResult, ModelInfo
 
 class BaseLLMProvider(ABC):
 
@@ -24,4 +24,9 @@ class BaseLLMProvider(ABC):
 
     @abstractmethod
     async def test_connection(self, model: str | None = None) -> ProviderTestResult:
+        pass
+
+    @abstractmethod
+    async def list_models(self) -> List[ModelInfo]:
+        """Chat / text-generation models this key can use right now."""
         pass

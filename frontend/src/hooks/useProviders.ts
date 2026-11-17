@@ -38,3 +38,14 @@ export function useUpdateProvider() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['providers'] }),
   })
 }
+
+/** Live model list for one key. The backend caches it for about an hour. */
+export function useProviderModels(id: string | undefined, enabled = true) {
+  return useQuery({
+    queryKey: ['providers', 'models', id],
+    queryFn: () => providersApi.models(id as string),
+    enabled: !!id && enabled,
+    staleTime: 60 * 60_000,
+    retry: false,
+  })
+}

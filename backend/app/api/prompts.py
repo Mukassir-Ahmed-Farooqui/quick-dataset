@@ -169,14 +169,15 @@ async def test_prompt_with_llm(
     try:
         config = resolve_llm_config_with_model(
             db, project_id, str(current_user.id),
-            model="gpt-4o-mini",
+            model="",
             llm_key_id=data.llm_key_id,
             temperature=0.7,
             max_tokens=2048,
         )
     except Exception as e:
         raise bad_request(f"Failed to resolve LLM config: {str(e)}")
-    test_model = default_model_for(config.provider)
+    # Key's picked model, else the provider default (set by the resolver).
+    test_model = config.model or default_model_for(config.provider)
     config.model = test_model
 
     # Make the actual LLM call (not using tracked_complete since this is

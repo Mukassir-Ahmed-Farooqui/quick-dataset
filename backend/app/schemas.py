@@ -106,6 +106,7 @@ class LLMKeyCreate(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     api_key: str = Field(min_length=10)  # raw key, never stored or echoed back
     is_default: bool = False
+    selected_model: Optional[str] = Field(default=None, max_length=255)
 
 
 class LLMKeyUpdate(BaseModel):
@@ -115,6 +116,9 @@ class LLMKeyUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=128)
     api_key: Optional[str] = Field(default=None, min_length=10)
     is_default: Optional[bool] = None
+    # Model picked from GET /providers/{id}/models. Send "" to clear it and
+    # go back to the provider default.
+    selected_model: Optional[str] = Field(default=None, max_length=255)
 
 
 class LLMKeyOut(BaseModel):
@@ -127,6 +131,17 @@ class LLMKeyOut(BaseModel):
     is_valid: Optional[bool]
     last_validated_at: Optional[datetime]
     created_at: datetime
+    selected_model: Optional[str] = None
+
+
+class LLMKeyModelsOut(BaseModel):
+    """Response for GET /providers/{id}/models."""
+    provider: str
+    selected_model: Optional[str] = None
+    default_model: str
+    models: list[dict]
+    cached: bool = False
+    fetched_at: Optional[datetime] = None
 
 
 class LLMKeyTestResult(BaseModel):
@@ -138,6 +153,9 @@ class LLMKeyTestResult(BaseModel):
     model: str
     latency_ms: Optional[int] = None
     error: Optional[str] = None
+    # Set when the requested/selected model was unavailable (e.g. retired)
+    # and the test fell back to the provider default.
+    warning: Optional[str] = None
 
 
 # ── Projects ─────────────────────────────────────────────────────────

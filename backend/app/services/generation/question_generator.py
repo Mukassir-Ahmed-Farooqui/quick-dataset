@@ -205,7 +205,7 @@ async def generate_questions(
         project_id, len(chunks), len(ga_pairs), question_count_mode, len(jobs), total_expected,
     )
 
-    runner = LLMRunner(db, project_id, config, model, task_id=task_id, concurrency=concurrency, seed=seed)
+    runner = LLMRunner(db, project_id, config, config.model or model, task_id=task_id, concurrency=concurrency, seed=seed)
     rng = random.Random(seed)
     errors: list[dict] = []
     pending: list[Question] = []

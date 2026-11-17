@@ -257,7 +257,7 @@ async def generate_ga_pairs(
         if skipped:
             task_repo.update_progress(task_id, completed_increment=skipped)
 
-        runner = LLMRunner(db, project_id, config, model, task_id=task_id, concurrency=concurrency, seed=seed)
+        runner = LLMRunner(db, project_id, config, config.model or model, task_id=task_id, concurrency=concurrency, seed=seed)
 
         async def worker(doc_id: str) -> list[dict]:
             prompt = build_ga_prompt(prompt_template, contents[doc_id], pairs_per_document)

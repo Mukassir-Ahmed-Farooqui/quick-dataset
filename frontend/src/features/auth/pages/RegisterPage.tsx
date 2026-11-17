@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { Eye, EyeOff, Loader2 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { toast } from '@/lib/toast'
-import FormField from '@/components/forms/FormField'
+import FormField from '@/components/common/FormField'
 
 const registerSchema = z.object({
   username: z

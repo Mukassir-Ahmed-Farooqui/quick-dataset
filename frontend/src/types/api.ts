@@ -66,6 +66,8 @@ export interface LLMKeyUpdate {
   name?: string
   api_key?: string
   is_default?: boolean
+  /** Model picked from the key's live catalog; "" clears it (provider default). */
+  selected_model?: string
 }
 
 export type LLMProvider = 'openrouter' | 'openai' | 'groq' | 'gemini'
@@ -79,6 +81,23 @@ export interface LLMKeyOut {
   is_valid: boolean | null
   last_validated_at: string | null
   created_at: string
+  selected_model?: string | null
+}
+
+export interface ProviderModel {
+  id: string
+  name: string | null
+  context_window: number | null
+  owned_by: string | null
+}
+
+export interface LLMKeyModelsOut {
+  provider: string
+  selected_model: string | null
+  default_model: string
+  models: ProviderModel[]
+  cached: boolean
+  fetched_at: string | null
 }
 
 export interface GAPairOut {
@@ -127,6 +146,7 @@ export interface LLMKeyTestResult {
   model: string
   latency_ms: number | null
   error: string | null
+  warning?: string | null
 }
 
 export interface PipelineProgress {

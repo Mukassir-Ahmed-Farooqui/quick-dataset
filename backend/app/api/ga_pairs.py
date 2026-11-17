@@ -18,6 +18,7 @@ from app.services.generation.resolver import (
     resolve_llm_config_with_model,
     resolve_model,
     resolve_provider_name,
+    resolve_selected_model,
 )
 from app.services.prompts.prompt_service import PromptService
 from app.schemas_extended import GAPairCreate, GAPairUpdate, GAPairOut
@@ -71,7 +72,10 @@ def estimate_ga_pairs(
     return estimate_ga_generation(
         document_count=len(set(data.document_ids)),
         provider=provider,
-        model=resolve_model(data.model, provider),
+        model=resolve_model(
+            data.model, provider,
+            resolve_selected_model(db, project_id, str(current_user.id), data.llm_key_id),
+        ),
         pairs_per_document=data.pairs_per_document,
     )
 
@@ -116,7 +120,7 @@ async def generate_ga_pairs_endpoint(
         )
     except Exception as e:
         raise bad_request(f"Cannot start generation: {str(e)}", "LLM_CONFIG_FAILED")
-    model = resolve_model(data.model, config.provider)
+    model = resolve_model(data.model, config.provider, config.selected_model)
     document_ids = list(dict.fromkeys(data.document_ids))  # de-duplicate, keep order
 
     # Create GenerationRun + Task synchronously so frontend gets real IDs

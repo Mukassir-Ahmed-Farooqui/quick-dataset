@@ -647,7 +647,7 @@ async def generate_answers(
         temperature=temperature,
         max_tokens=max_tokens,
     )
-    model = model or default_model_for(getattr(config, "provider", None))
+    model = config.model or model or default_model_for(getattr(config, "provider", None))
     config.model = model
 
     logger.info(

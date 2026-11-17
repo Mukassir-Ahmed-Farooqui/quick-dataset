@@ -62,13 +62,16 @@ def estimate_answers(
     if not data.question_ids:
         raise bad_request("At least one question_id is required")
 
-    from app.services.generation.resolver import resolve_model, resolve_provider_name
+    from app.services.generation.resolver import resolve_model, resolve_provider_name, resolve_selected_model
     provider = resolve_provider_name(db, project_id, str(current_user.id), data.llm_key_id)
 
     return estimate_answer_generation(
         question_count=len(set(data.question_ids)),
         provider=provider,
-        model=resolve_model(data.model, provider),
+        model=resolve_model(
+            data.model, provider,
+            resolve_selected_model(db, project_id, str(current_user.id), data.llm_key_id),
+        ),
     )
 
 
@@ -113,7 +116,7 @@ async def generate_answers_endpoint(
         )
     except Exception as e:
         raise bad_request(f"Cannot start generation: {str(e)}", "LLM_CONFIG_FAILED")
-    model = resolve_model(data.model, config.provider)
+    model = resolve_model(data.model, config.provider, config.selected_model)
     optional_kwargs = _supported_kwargs(generate_answers, {
         "concurrency": getattr(data, "concurrency", None),
         "include_cot": getattr(data, "include_cot", None),
