@@ -38,6 +38,8 @@ class GeminiProvider(BaseLLMProvider):
         # no text. Keep at least half the budget for the visible answer.
         if "2.5" in model:
             body["generationConfig"]["thinkingConfig"] = {"thinkingBudget": max(0, min(2048, max_tokens // 2))}
+        elif model.startswith("gemini-3"):
+            body["generationConfig"]["thinkingConfig"] = {"thinkingLevel": "low"}
         if system_instruction:
             body["systemInstruction"] = system_instruction
 

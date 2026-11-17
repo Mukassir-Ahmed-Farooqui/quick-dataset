@@ -30,7 +30,7 @@ from app.schemas_extended import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_ANSWER_TEMPERATURE = 0.3
-DEFAULT_ANSWER_MAX_TOKENS = 4096
+DEFAULT_ANSWER_MAX_TOKENS = 1024
 
 
 def _supported_kwargs(func, kwargs: dict) -> dict:

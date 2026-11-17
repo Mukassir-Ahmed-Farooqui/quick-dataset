@@ -24,6 +24,11 @@ class GroqProvider(BaseLLMProvider):
             "Content-Type": "application/json",
         }
         payload = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
+        # gpt-oss spends hidden reasoning tokens that count against Groq's
+        # per-minute and per-day token caps. "low" keeps quality for
+        # extraction-style work at a fraction of the tokens.
+        if model.startswith("openai/gpt-oss"):
+            payload["reasoning_effort"] = "low"
         response = await client.post(f"{self.base_url}/chat/completions", json=payload, headers=headers)
         response.raise_for_status()
         data = response.json()

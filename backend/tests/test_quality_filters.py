@@ -83,3 +83,13 @@ def test_self_revision_prefix_stripped():
     from app.services.generation.question_postprocess import clean_question
     q = clean_question('Better: "What type of risk response relies on existing security controls?')
     assert q == "What type of risk response relies on existing security controls?"
+
+
+def test_grounding_catches_invented_expansion():
+    from app.services.quality.grounding import grounding_report, is_grounded
+    src = ("Sharing with CISA and the Multi-State Information Sharing and Analysis Center (MS-ISAC) "
+           "includes information about ransomware trends and variants.")
+    bad = grounding_report("It is shared with the Microsoft Security and Incident Response Center (MS-ISAC).", src)
+    assert not is_grounded(bad)
+    good = grounding_report("Information about ransomware trends and variants is shared with CISA and the MS-ISAC.", src)
+    assert is_grounded(good)

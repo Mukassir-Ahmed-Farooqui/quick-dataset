@@ -812,12 +812,26 @@ async def generate_answers(
             if result["cot"]:
                 payload["cot"] = result["cot"]
 
-        if evaluate:
+        # Free local grounding check runs on every item, judge or not.
+        from app.services.quality.grounding import grounding_report, is_grounded
+        _src = (result.get("chunk") or {}).get("content", "") if isinstance(result.get("chunk"), dict) else ""
+        g_report = grounding_report(answer_text, _src or context, q["question"])
+        meta["grounding"] = g_report
+        grounded = is_grounded(g_report)
+        if not grounded:
+            # Ungrounded: cap the score and skip the paid/limited judge call.
+            result["score"] = 0.3
+            result["ai_evaluation"] = "Failed local grounding check: " + ", ".join(
+                g_report["unsupported_phrases"] + g_report.get("unsupported_numbers", [])
+            )[:400] or f"support {g_report['support']}"
+            if min_quality_score is not None:
+                meta["below_threshold"] = True
+        if evaluate and grounded:
             try:
                 judge_raw = await judge_runner.complete(
                     render_prompt(eval_template, {"content": context, "text": context,
                                                   "question": q["question"], "answer": answer_text}),
-                    temperature=JUDGE_TEMPERATURE, max_tokens=min(max_tokens, 1024),
+                    temperature=JUDGE_TEMPERATURE, max_tokens=min(max_tokens, 800),
                 )
                 score, raw_score, evaluation = parse_judge_output(judge_raw)
                 judge_visible = re.sub(r"<think>[\s\S]*?</think>", "", judge_raw or "").strip()
@@ -831,6 +845,11 @@ async def generate_answers(
                 result["ai_evaluation"] = evaluation or None
             except Exception as e:
                 meta["evaluation_error"] = str(e)[:500]
+                # Judge unavailable (quota/outage): never let an unscored item
+                # pass silently. Hold it below threshold so it can be re-judged.
+                if min_quality_score is not None:
+                    meta["below_threshold"] = True
+                    meta["needs_rejudge"] = True
         return result
 
     def on_result(q: dict, result: Optional[dict], error: Optional[BaseException]) -> None:

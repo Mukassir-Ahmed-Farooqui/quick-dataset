@@ -331,7 +331,8 @@ def test_parse_judge_output_no_score():
 
 
 @pytest.mark.asyncio
-async def test_judge_scores_and_flags_below_threshold(db, project, patch_llm):
+async def test_judge_scores_and_flags_below_threshold(db, project, patch_llm, monkeypatch):
+    monkeypatch.setattr('app.services.quality.grounding.is_grounded', lambda r, **k: True)
     def responder(kind, p):
         if kind == "eval":
             return '{"score": 2, "evaluation": "Thin answer."}' if "How do pumps run?" in p else '{"score": 4.5, "evaluation": "Good."}'
@@ -350,7 +351,8 @@ async def test_judge_scores_and_flags_below_threshold(db, project, patch_llm):
 
 
 @pytest.mark.asyncio
-async def test_judge_failure_keeps_item(db, project, patch_llm):
+async def test_judge_failure_keeps_item(db, project, patch_llm, monkeypatch):
+    monkeypatch.setattr('app.services.quality.grounding.is_grounded', lambda r, **k: True)
     def responder(kind, p):
         if kind == "eval":
             raise RuntimeError("judge down")
