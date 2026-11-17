@@ -58,3 +58,10 @@ def test_pdf_clean_pages_strips_headers_and_toc():
     pages = [["NIST SP 800-61r3", f"Body about topic {chr(64 + i)}", "1.2 Purpose ........ 4", str(i)] for i in range(1, 9)]
     cleaned = clean_pages(pages)
     assert all(p == [f"Body about topic {chr(64 + i)}"] for i, p in enumerate(cleaned, 1))
+
+
+def test_answers_do_not_cite_invisible_source():
+    from app.services.generation.answer_generator import strip_referential_leadins as f
+    assert f("IDENTIFY is first. The text explains that assets are categorized.") == "IDENTIFY is first. Assets are categorized."
+    assert f("According to the source, backups must be offline.") == "Backups must be offline."
+    assert f("The text box widget explains nothing.") == "The text box widget explains nothing."

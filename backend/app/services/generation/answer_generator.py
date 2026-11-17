@@ -422,13 +422,34 @@ def _parse_label(text: str) -> str:
     return label[:200]
 
 
+# Answers are training targets for a model that never sees the source, so
+# "The text explains that ..." teaches it to cite an invisible document.
+_REFERENTIAL_LEADIN_RE = re.compile(
+    r"(?:(?<=^)|(?<=[.!?]\s)|(?<=\n))\s*"
+    r"(?:according\s+to|based\s+on|as\s+(?:stated|described|noted|explained|mentioned)\s+in|per)\s+"
+    r"(?:the|this)\s+(?:provided\s+|given\s+|reference\s+)?"
+    r"(?:text|source|passage|document|reference(?:\s+content)?|excerpt|entry|content|guide|publication)\s*,\s*"
+    r"|(?:(?<=^)|(?<=[.!?]\s)|(?<=\n))\s*"
+    r"(?:the|this)\s+(?:text|source|passage|document|reference|excerpt|entry|content)\s+"
+    r"(?:explains|states|notes|says|indicates|mentions|describes|shows)\s+(?:that\s+)?",
+    re.IGNORECASE,
+)
+
+
+def strip_referential_leadins(text: str) -> str:
+    out = _REFERENTIAL_LEADIN_RE.sub(" ", text)
+    # Re-capitalise sentence starts that lost their lead-in.
+    out = re.sub(r"(^|[.!?]\s+|\n)\s*([a-z])", lambda m: m.group(1) + m.group(2).upper(), out.strip())
+    return re.sub(r"[ \t]{2,}", " ", out).strip()
+
+
 def _parse_qa(text: str) -> str:
     stripped = text.strip()
     if stripped.startswith("{") or stripped.startswith("```"):
         data = extract_json(stripped, expect=dict)
         if isinstance(data, dict) and isinstance(data.get("answer"), str):
             stripped = data["answer"]
-    answer = _clean_markdown(stripped)
+    answer = strip_referential_leadins(_clean_markdown(stripped))
     if not answer:
         raise PayloadError("Empty answer")
     return answer
@@ -782,7 +803,8 @@ async def generate_answers(
                     temperature=JUDGE_TEMPERATURE, max_tokens=min(max_tokens, 1024),
                 )
                 score, raw_score, evaluation = parse_judge_output(judge_raw)
-                meta["evaluation"] = {"raw_output": judge_raw[:4000], "raw_score": raw_score, "scale": JUDGE_SCALE}
+                judge_visible = re.sub(r"<think>[\s\S]*?</think>", "", judge_raw or "").strip()
+                meta["evaluation"] = {"raw_output": (judge_visible or judge_raw)[:4000], "raw_score": raw_score, "scale": JUDGE_SCALE}
                 if score is None:
                     meta["evaluation_error"] = "no score in judge output"
                 else:
