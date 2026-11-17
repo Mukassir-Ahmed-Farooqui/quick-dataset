@@ -213,6 +213,9 @@ class AnswerGenerateRequest(GenerationConfigBase):
     # Optional separate judge (another provider key and/or model).
     judge_llm_key_id: Optional[str] = None
     judge_model: Optional[str] = None
+    # Optional backup judge, tried only when the main judge call fails.
+    judge_fallback_llm_key_id: Optional[str] = None
+    judge_fallback_model: Optional[str] = None
 
 
 # Discriminated payload shapes — the API validates against the right one

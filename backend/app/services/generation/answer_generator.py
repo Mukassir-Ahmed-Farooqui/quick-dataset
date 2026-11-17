@@ -591,6 +591,8 @@ async def generate_answers(
     seed: Optional[int] = None,
     judge_llm_key_id: Optional[str] = None,
     judge_model: Optional[str] = None,
+    judge_fallback_llm_key_id: Optional[str] = None,
+    judge_fallback_model: Optional[str] = None,
 ) -> dict:
     """Generate answers for the specified questions (background task entry point).
 
@@ -743,6 +745,22 @@ async def generate_answers(
         judge_config.model = jm
         judge_runner = LLMRunner(db, project_id, judge_config, jm, task_id=task_id, concurrency=concurrency, seed=seed)
         logger.info("Judge uses separate model=%s provider=%s", jm, getattr(judge_config, "provider", None))
+    # Optional second judge, used only when the first one fails (e.g. a free
+    # tier's daily quota), so items get scored instead of held for re-judging.
+    fallback_judge_runner = None
+    if evaluate and (judge_fallback_llm_key_id or judge_fallback_model):
+        try:
+            fb_config = resolve_llm_config_with_model(
+                db, project_id, user_id,
+                model=judge_fallback_model or "",
+                llm_key_id=judge_fallback_llm_key_id or llm_key_id,
+                temperature=JUDGE_TEMPERATURE, max_tokens=max_tokens,
+            )
+            fbm = fb_config.model or judge_fallback_model or default_model_for(getattr(fb_config, "provider", None))
+            fb_config.model = fbm
+            fallback_judge_runner = LLMRunner(db, project_id, fb_config, fbm, task_id=task_id, concurrency=concurrency, seed=seed)
+        except Exception as e:  # a bad fallback must not block generation
+            logger.warning("Fallback judge unavailable: %s", e)
     errors: list[dict] = []
     pending: list[DatasetItem] = []
     pending_qids: list[str] = []
@@ -828,11 +846,20 @@ async def generate_answers(
                 meta["below_threshold"] = True
         if evaluate and grounded:
             try:
-                judge_raw = await judge_runner.complete(
-                    render_prompt(eval_template, {"content": context, "text": context,
-                                                  "question": q["question"], "answer": answer_text}),
-                    temperature=JUDGE_TEMPERATURE, max_tokens=min(max_tokens, 800),
-                )
+                judge_prompt = render_prompt(eval_template, {"content": context, "text": context,
+                                                             "question": q["question"], "answer": answer_text})
+                try:
+                    judge_raw = await judge_runner.complete(
+                        judge_prompt, temperature=JUDGE_TEMPERATURE, max_tokens=min(max_tokens, 800),
+                    )
+                except Exception as primary_err:
+                    if fallback_judge_runner is None:
+                        raise
+                    meta["judge_fallback_reason"] = str(primary_err)[:200]
+                    judge_raw = await fallback_judge_runner.complete(
+                        judge_prompt, temperature=JUDGE_TEMPERATURE, max_tokens=min(max_tokens, 800),
+                    )
+                    meta["judge"] = "fallback"
                 score, raw_score, evaluation = parse_judge_output(judge_raw)
                 judge_visible = re.sub(r"<think>[\s\S]*?</think>", "", judge_raw or "").strip()
                 meta["evaluation"] = {"raw_output": (judge_visible or judge_raw)[:4000], "raw_score": raw_score, "scale": JUDGE_SCALE}

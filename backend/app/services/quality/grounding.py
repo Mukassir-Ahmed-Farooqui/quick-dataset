@@ -6,6 +6,10 @@ source never mentions (e.g. expanding "MS-ISAC" to a made-up name).
 """
 from __future__ import annotations
 
+# Tuned on 47 real items (NIST/CISA docs): word overlap alone flagged good
+# paraphrases at 0.33-0.48 support, while invented names are caught by the
+# phrase check. So the overlap floor is low and phrases do the real work.
+
 import re
 
 _STOP = set("""a an the and or of to in on for by with from as at is are was were be been being this that these those it its
@@ -38,8 +42,17 @@ def grounding_report(answer: str, source: str, question: str = "") -> dict:
     phrases = []
     for m in _PROPER.finditer(answer or ""):
         ph = re.sub(r"\s+", " ", m.group(0))
-        if ph.lower() not in src_flat and ph.lower() not in (question or "").lower():
-            phrases.append(ph)
+        ph = re.sub(r"^(?:The|A|An|This|These|Those|Its|Their|Both|Each)\s+", "", ph)
+        if " " not in ph:
+            continue
+        if ph.lower() in src_flat or ph.lower() in (question or "").lower():
+            continue
+        # A capitalised phrase is only suspicious when it brings in words the
+        # source and question never use (an invented name or expansion).
+        words = [_norm(w) for w in _WORD.findall(ph) if w.lower() not in _STOP]
+        if words and all(w in src_words or w in q_words for w in words):
+            continue
+        phrases.append(ph)
     nums = [n for n in re.findall(r"\b\d+(?:\.\d+)?\b", answer or "") if n not in src and n not in (question or "")]
     return {
         "support": round(support, 3),
@@ -49,7 +62,7 @@ def grounding_report(answer: str, source: str, question: str = "") -> dict:
     }
 
 
-def is_grounded(report: dict, min_support: float = 0.5) -> bool:
+def is_grounded(report: dict, min_support: float = 0.3) -> bool:
     return (
         report["support"] >= min_support
         and not report["unsupported_phrases"]

@@ -1,6 +1,7 @@
 """Dataset Items API — review, confirm, delete, and generate answers for questions."""
 import logging
 from typing import Optional
+from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException, status, Query
 from sqlalchemy.orm import Session
 
@@ -124,6 +125,8 @@ async def generate_answers_endpoint(
         "min_quality_score": getattr(data, "min_quality_score", None),
         "judge_llm_key_id": getattr(data, "judge_llm_key_id", None),
         "judge_model": getattr(data, "judge_model", None),
+        "judge_fallback_llm_key_id": getattr(data, "judge_fallback_llm_key_id", None),
+        "judge_fallback_model": getattr(data, "judge_fallback_model", None),
     })
 
     # Create GenerationRun + Task synchronously so frontend gets real IDs
@@ -306,3 +309,34 @@ def bulk_delete_items(
     repo = DatasetItemRepository(db)
     repo.bulk_delete(project_id, data.ids)
     return None
+
+
+# ── Re-judge ─────────────────────────────────────────────────────────
+
+class RejudgeRequest(BaseModel):
+    ids: list[str] = Field(min_length=1, max_length=200)
+    judge_llm_key_id: Optional[str] = None
+    judge_model: Optional[str] = None
+    judge_fallback_llm_key_id: Optional[str] = None
+    judge_fallback_model: Optional[str] = None
+    min_quality_score: float = Field(default=0.8, ge=0.0, le=1.0)
+
+
+@router.post("/rejudge")
+async def rejudge_items_endpoint(
+    project_id: str,
+    data: RejudgeRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Re-score existing items (e.g. ones held out when the judge hit a quota)."""
+    from app.services.quality.rejudge import rejudge_items
+    try:
+        return await rejudge_items(
+            db, project_id, str(current_user.id), data.ids,
+            judge_llm_key_id=data.judge_llm_key_id, judge_model=data.judge_model,
+            fallback_llm_key_id=data.judge_fallback_llm_key_id, fallback_model=data.judge_fallback_model,
+            min_quality_score=data.min_quality_score,
+        )
+    except Exception as e:
+        raise bad_request(f"Cannot re-judge: {e}", "REJUDGE_FAILED")
