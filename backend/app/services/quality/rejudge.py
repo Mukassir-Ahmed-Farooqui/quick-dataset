@@ -20,7 +20,7 @@ from app.services.generation.context import render_prompt
 from app.services.generation.llm_runner import LLMRunner
 from app.services.generation.resolver import default_model_for, resolve_llm_config_with_model
 from app.services.prompts.prompt_service import PromptService
-from app.services.quality.grounding import grounding_report, is_grounded
+from app.services.quality.grounding import grounding_report, is_grounded, needs_unseen_context
 
 logger = logging.getLogger(__name__)
 JUDGE_MAX_TOKENS = 600
@@ -57,6 +57,8 @@ async def rejudge_items(
         question, answer = payload.get("question", ""), payload.get("answer", "")
         source = chunks.get(item.source_chunk_id, "")
         g = grounding_report(answer, source, question)
+        if needs_unseen_context(question):
+            return {"id": item.id, "score": 0.5, "eval": "Question depends on unseen context", "grounding": g, "judge": "local"}
         if not is_grounded(g):
             return {"id": item.id, "score": 0.3, "eval": "Failed local grounding check", "grounding": g, "judge": "local"}
         prompt = render_prompt(template, {"content": source, "text": source, "question": question, "answer": answer})

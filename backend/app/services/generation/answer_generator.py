@@ -831,11 +831,14 @@ async def generate_answers(
                 payload["cot"] = result["cot"]
 
         # Free local grounding check runs on every item, judge or not.
-        from app.services.quality.grounding import grounding_report, is_grounded
+        from app.services.quality.grounding import grounding_report, is_grounded, needs_unseen_context
         _src = (result.get("chunk") or {}).get("content", "") if isinstance(result.get("chunk"), dict) else ""
         g_report = grounding_report(answer_text, _src or context, q["question"])
         meta["grounding"] = g_report
         grounded = is_grounded(g_report)
+        if grounded and needs_unseen_context(q["question"]):
+            grounded = False
+            g_report = {**g_report, "unsupported_phrases": ["question depends on unseen context"]}
         if not grounded:
             # Ungrounded: cap the score and skip the paid/limited judge call.
             result["score"] = 0.3

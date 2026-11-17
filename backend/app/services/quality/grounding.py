@@ -68,3 +68,17 @@ def is_grounded(report: dict, min_support: float = 0.3) -> bool:
         and not report["unsupported_phrases"]
         and not report.get("unsupported_numbers")
     )
+
+
+# Questions a reader without the source cannot decode. A small judge model
+# (gpt-oss-20b) kept passing these, so they are caught locally for free.
+_NEEDS_CONTEXT = re.compile(
+    r"\b(?:according to|under|in|per)\s+R\d+\b|\bR\d+\b(?!\.)"
+    r"|\bthe (?:specified|above|following|aforementioned|mentioned|given) (?:requirements|guidelines|text|section|document|list)"
+    r"|\b(?:this|the) (?:section|excerpt|passage|document|guide|publication)\b",
+    re.I,
+)
+
+
+def needs_unseen_context(question: str) -> bool:
+    return bool(_NEEDS_CONTEXT.search(question or ""))

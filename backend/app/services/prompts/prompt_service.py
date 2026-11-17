@@ -213,6 +213,8 @@ If no source text is given, judge internal consistency and factual plausibility 
    - the question is document trivia: page, figure, table or appendix numbers, section titles, table of contents, errata, revision history, URLs, DOIs, publication dates, authors, or acknowledgments;
    - the question depends on unseen context ("the guide", "the recommendation", "R3", "the worm", "the server") instead of naming its subject;
    - the answer refers to the source ("the text explains", "this entry notes", "the document states").
+4. Check rule 3 before anything else. A bare code (R1, PR.AA, RS.MI-01) or a vague reference ("the specified requirements", "this section") that a reader without the source cannot decode counts as unseen context. A question whose only purpose is to recall a code's label, an email address, or a name is document trivia.
+5. Reserve 5 for samples with no flaw at all. If you can name any weakness, the score is at most 4.5.
 4. Lower Grounding to 3 when the answer adds explanations, consequences, or purposes the source does not state, even if plausible.
 5. Most real samples are not perfect. Give 5 only when you can name no weakness at all.
 6. Keep the evaluation under 80 words, naming the main strength and the main weakness.
