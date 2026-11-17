@@ -7,8 +7,9 @@ Applied to every batch of LLM-generated questions before they are saved:
   extractor), falling back to line / numbered-list parsing.
 - :func:`clean_question` — strips numbering, quotes, and the
   "According to the text, ..." style lead-ins the prompt forbids, then
-  rejects questions that are too short or about document meta
-  (author, chapter, table of contents, "this passage" ...).
+  rejects questions that are too short, about document meta
+  (author, chapter, table of contents, "this passage" ...), or that do
+  not read as a question at all (refusals / chatter).
 - :func:`dedupe_questions` — exact duplicates on a normalized form plus
   near-duplicates via token-set Jaccard and difflib ratio.
 - :func:`random_remove_question_mark` — Easy Dataset's optional
@@ -53,6 +54,27 @@ _META_PATTERNS = [
 ]
 _META_RE = re.compile("|".join(_META_PATTERNS), re.IGNORECASE)
 
+# A kept item must actually read as a question: either it ends with a
+# question mark, or it opens with an interrogative / question-style
+# imperative. This rejects refusals and chatter such as
+# "Sorry, I cannot help with that." that would otherwise pass the
+# length checks.
+_QUESTION_START_RE = re.compile(
+    r"^(?:what|whats|what's|how|why|when|where|which|who|whom|whose|"
+    r"is|are|was|were|am|do|does|did|can|could|should|would|will|shall|may|might|must|"
+    r"has|have|had|in\s+what|to\s+what|under\s+what|for\s+what|by\s+how|"
+    r"explain|describe|compare|contrast|list|identify|outline|summarize|summarise|define|discuss)\b",
+    re.IGNORECASE,
+)
+
+
+def looks_like_question(text: str) -> bool:
+    t = text.strip()
+    if t.endswith(("?", "？")):
+        return True
+    return bool(_QUESTION_START_RE.match(t))
+
+
 _NUMBERING_RE = re.compile(r"^\s*(?:Q(?:uestion)?\s*\d*\s*[:.)-]|\d+\s*[.)\]、:-]|[-*•+]\s+)\s*", re.IGNORECASE)
 _PUNCT_TABLE = str.maketrans({c: " " for c in string.punctuation + "？。，、；：“”‘’（）"})
 
@@ -86,6 +108,8 @@ def clean_question(raw: object) -> Optional[str]:
     if len(q) > MAX_QUESTION_CHARS:
         return None
     if is_meta_question(q):
+        return None
+    if not looks_like_question(q):
         return None
     return q
 
