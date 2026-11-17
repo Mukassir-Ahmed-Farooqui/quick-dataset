@@ -96,7 +96,7 @@ QUESTION_PROMPT = """# Role: Text Question Generation Expert
 4. Enforce strict formatting so the output can be consumed programmatically.
 
 ## Workflow:
-1. **Text Parsing**: Read the entire passage (the "Section:" line, if present, only tells you where the passage sits in a larger document) and note key entities, events, metrics, definitions, steps, and conclusions.
+1. **Text Parsing**: Read the entire passage (the "Source document:" and "Section:" lines, if present, only tell you where the passage comes from) and note key entities, events, metrics, definitions, steps, and conclusions.
 2. **Question Design**: Select the most informative focal points and craft questions{ga_prompt_note}.
 3. **Quality Check**: Validate every question:
    - Its answer can be found in, or directly derived from, the passage alone.
@@ -112,9 +112,12 @@ QUESTION_PROMPT = """# Role: Text Question Generation Expert
 4. Never use phrases such as "according to the text/article/passage/document/report", "in this passage", or "the author says"; questions must read naturally on their own.
 5. Do not ask yes/no questions or questions whose answer is a single trivial word unless the fact is genuinely important.
 6. Output exactly {questions_per_combination} question(s), each a single sentence ending with a question mark.
+7. Never ask bibliographic or administrative trivia: URLs, DOIs, errata, revision history, publication dates, figure or table numbers, appendix names, acknowledgments, reference lists, or contact details.
+8. Questions are used to fine-tune a model that will NOT see this passage. Never refer to "the guide", "the guideline", "the publication", "the report", "the recommendation", or a bare label such as "R3" or "N1". When the subject belongs to a named framework, standard, product, or document (see "Source document:"), name it explicitly.
+9. If the passage is boilerplate with nothing worth learning (a table of contents, index, reference list, running headers, legal notice, or a near-empty page), return an empty array [] instead of inventing questions.
 
 ## Output Format:
-Return ONLY a valid JSON array of strings, double-quoted, with no commentary:
+Return ONLY a valid JSON array of strings, double-quoted, with no commentary (or [] when rule 9 applies):
 ```json
 ["Question 1?", "Question 2?"]
 ```
@@ -159,8 +162,9 @@ ANSWER_PROMPT = """# Role: Fine-tuning Dataset Answer Expert
 1. The answer must be based strictly on the reference content. Do not add outside knowledge, opinions, or assumptions.
 2. If the reference content only partially answers the question, answer what it supports and state briefly which part it does not cover. Never invent the missing part.
 3. Be comprehensive and detailed enough to fully answer the question, but do not pad with repetition.
-4. Never use referential phrases such as "according to the reference", "the text states", "based on the document", or citation marks; present the information directly.
+4. Never use referential phrases such as "according to the reference", "the text states", "this entry notes", "based on the document", or citation marks; present the information directly. The answer will train a model that never sees the reference, so it must stand on its own.
 5. Begin with the direct answer, then give supporting detail, steps, or explanation where useful.
+6. Do not add purposes, consequences, or explanations the reference does not state, even if they seem obvious.
 {output_format}
 """
 
@@ -205,7 +209,13 @@ If no source text is given, judge internal consistency and factual plausibility 
 ## Rules:
 1. Final score = Question×0.25 + Answer×0.35 + Grounding×0.25 + Consistency×0.15, on a 0-5 scale, rounded to the nearest 0.5.
 2. Be strict: 5 means near-perfect. Any factual error, fabrication, or a meta/unanswerable question must score below 2.
-3. Keep the evaluation under 80 words, naming the main strength and the main weakness.
+3. The data trains a model that will NOT see the source. Score Training Value low (≤2) and cap the final score at 2.5 when:
+   - the question is document trivia: page, figure, table or appendix numbers, section titles, table of contents, errata, revision history, URLs, DOIs, publication dates, authors, or acknowledgments;
+   - the question depends on unseen context ("the guide", "the recommendation", "R3", "the worm", "the server") instead of naming its subject;
+   - the answer refers to the source ("the text explains", "this entry notes", "the document states").
+4. Lower Grounding to 3 when the answer adds explanations, consequences, or purposes the source does not state, even if plausible.
+5. Most real samples are not perfect. Give 5 only when you can name no weakness at all.
+6. Keep the evaluation under 80 words, naming the main strength and the main weakness.
 
 ## Output Format:
 Return ONLY a JSON object, no markdown, no other text:

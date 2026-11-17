@@ -64,7 +64,24 @@ def heading_path_of(chunk_metadata: Optional[dict]) -> list[str]:
     if not chunk_metadata or not isinstance(chunk_metadata, dict):
         return []
     path = chunk_metadata.get("heading_path") or []
-    return [str(p).strip() for p in path if str(p).strip() and str(p).strip() != "(preamble)"]
+    return [
+        str(p).strip() for p in path
+        if str(p).strip() and str(p).strip() != "(preamble)" and not _PAGE_MARKER_RE.match(str(p).strip())
+    ]
+
+
+# PDF parsing emits "## Page N" markers. They are layout, not meaning, and
+# sending "Section: Page 12" to the model invites "What is on Page 12?".
+_PAGE_MARKER_RE = re.compile(r"^page\s+\d+$", re.IGNORECASE)
+
+
+def source_title_from_filename(filename: Optional[str]) -> Optional[str]:
+    """'sp800-61r3_incident_response.pdf' -> 'sp800-61r3 incident response'."""
+    if not filename:
+        return None
+    stem = re.sub(r"\.(pdf|docx?|md|markdown|txt)$", "", str(filename), flags=re.IGNORECASE)
+    stem = re.sub(r"[_]+", " ", stem).strip()
+    return stem or None
 
 
 def build_chunk_context(
@@ -80,6 +97,9 @@ def build_chunk_context(
     path = heading_path_of(chunk_metadata)
     summary = (chunk_metadata or {}).get("summary") if isinstance(chunk_metadata, dict) else None
     prefix_parts = []
+    source = (chunk_metadata or {}).get("source_title") if isinstance(chunk_metadata, dict) else None
+    if source and isinstance(source, str):
+        prefix_parts.append("Source document: " + source.strip())
     if path:
         prefix_parts.append("Section: " + " > ".join(path))
     if summary and isinstance(summary, str):

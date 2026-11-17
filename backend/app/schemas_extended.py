@@ -210,6 +210,9 @@ class AnswerGenerateRequest(GenerationConfigBase):
     # With evaluate=true: items scoring below this (0-1) are not saved and
     # their questions stay unanswered so they can be regenerated.
     min_quality_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    # Optional separate judge (another provider key and/or model).
+    judge_llm_key_id: Optional[str] = None
+    judge_model: Optional[str] = None
 
 
 # Discriminated payload shapes — the API validates against the right one

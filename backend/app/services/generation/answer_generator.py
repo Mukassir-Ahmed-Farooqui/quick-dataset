@@ -422,13 +422,34 @@ def _parse_label(text: str) -> str:
     return label[:200]
 
 
+# Answers are training targets for a model that never sees the source, so
+# "The text explains that ..." teaches it to cite an invisible document.
+_REFERENTIAL_LEADIN_RE = re.compile(
+    r"(?:(?<=^)|(?<=[.!?]\s)|(?<=\n))\s*"
+    r"(?:according\s+to|based\s+on|as\s+(?:stated|described|noted|explained|mentioned)\s+in|per)\s+"
+    r"(?:the|this)\s+(?:provided\s+|given\s+|reference\s+)?"
+    r"(?:text|source|passage|document|reference(?:\s+content)?|excerpt|entry|content|guide|publication)\s*,\s*"
+    r"|(?:(?<=^)|(?<=[.!?]\s)|(?<=\n))\s*"
+    r"(?:the|this)\s+(?:text|source|passage|document|reference|excerpt|entry|content)\s+"
+    r"(?:explains|states|notes|says|indicates|mentions|describes|shows)\s+(?:that\s+)?",
+    re.IGNORECASE,
+)
+
+
+def strip_referential_leadins(text: str) -> str:
+    out = _REFERENTIAL_LEADIN_RE.sub(" ", text)
+    # Re-capitalise sentence starts that lost their lead-in.
+    out = re.sub(r"(^|[.!?]\s+|\n)\s*([a-z])", lambda m: m.group(1) + m.group(2).upper(), out.strip())
+    return re.sub(r"[ \t]{2,}", " ", out).strip()
+
+
 def _parse_qa(text: str) -> str:
     stripped = text.strip()
     if stripped.startswith("{") or stripped.startswith("```"):
         data = extract_json(stripped, expect=dict)
         if isinstance(data, dict) and isinstance(data.get("answer"), str):
             stripped = data["answer"]
-    answer = _clean_markdown(stripped)
+    answer = strip_referential_leadins(_clean_markdown(stripped))
     if not answer:
         raise PayloadError("Empty answer")
     return answer
@@ -568,6 +589,8 @@ async def generate_answers(
     concurrency: Optional[int] = None,
     max_context_tokens: int = MAX_CONTEXT_TOKENS,
     seed: Optional[int] = None,
+    judge_llm_key_id: Optional[str] = None,
+    judge_model: Optional[str] = None,
 ) -> dict:
     """Generate answers for the specified questions (background task entry point).
 
@@ -620,6 +643,21 @@ async def generate_answers(
                 "content": c.content or "",
                 "metadata": c.chunk_metadata if isinstance(c.chunk_metadata, dict) else None,
             }
+
+    # Tell the model which document a chunk comes from, so questions can name
+    # it ("In NIST SP 800-61r3, ...") instead of saying "the guide".
+    _doc_ids = {c["document_id"] for c in chunks.values() if c.get("document_id")}
+    if _doc_ids:
+        from app.models import Document as _Document
+        from app.services.generation.context import source_title_from_filename
+        _titles = {
+            str(d.id): source_title_from_filename(d.filename)
+            for d in db.query(_Document).filter(_Document.id.in_(list(_doc_ids))).all()
+        }
+        for _c in chunks.values():
+            _t = _titles.get(_c.get("document_id") or "")
+            if _t:
+                _c["metadata"] = {**(_c.get("metadata") or {}), "source_title": _t}
 
     ga_ids = list({q["ga_pair_id"] for q in questions if q["ga_pair_id"]})
     ga_pairs: dict[str, dict] = {}
@@ -690,6 +728,21 @@ async def generate_answers(
         task_id = str(task.id)
 
     runner = LLMRunner(db, project_id, config, model, task_id=task_id, concurrency=concurrency, seed=seed)
+    # A separate judge (another key and/or model) avoids a model grading its
+    # own answers and spreads load across provider rate-limit buckets.
+    judge_runner = runner
+    if evaluate and (judge_llm_key_id or judge_model):
+        judge_config = resolve_llm_config_with_model(
+            db, project_id, user_id,
+            model=judge_model or "",
+            llm_key_id=judge_llm_key_id or llm_key_id,
+            temperature=JUDGE_TEMPERATURE,
+            max_tokens=max_tokens,
+        )
+        jm = judge_config.model or judge_model or default_model_for(getattr(judge_config, "provider", None))
+        judge_config.model = jm
+        judge_runner = LLMRunner(db, project_id, judge_config, jm, task_id=task_id, concurrency=concurrency, seed=seed)
+        logger.info("Judge uses separate model=%s provider=%s", jm, getattr(judge_config, "provider", None))
     errors: list[dict] = []
     pending: list[DatasetItem] = []
     pending_qids: list[str] = []
@@ -761,13 +814,14 @@ async def generate_answers(
 
         if evaluate:
             try:
-                judge_raw = await runner.complete(
+                judge_raw = await judge_runner.complete(
                     render_prompt(eval_template, {"content": context, "text": context,
                                                   "question": q["question"], "answer": answer_text}),
                     temperature=JUDGE_TEMPERATURE, max_tokens=min(max_tokens, 1024),
                 )
                 score, raw_score, evaluation = parse_judge_output(judge_raw)
-                meta["evaluation"] = {"raw_output": judge_raw[:4000], "raw_score": raw_score, "scale": JUDGE_SCALE}
+                judge_visible = re.sub(r"<think>[\s\S]*?</think>", "", judge_raw or "").strip()
+                meta["evaluation"] = {"raw_output": (judge_visible or judge_raw)[:4000], "raw_score": raw_score, "scale": JUDGE_SCALE}
                 if score is None:
                     meta["evaluation_error"] = "no score in judge output"
                 else:
