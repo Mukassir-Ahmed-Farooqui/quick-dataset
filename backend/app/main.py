@@ -41,6 +41,17 @@ app.include_router(search.router, prefix="/api/v1")
 app.include_router(dataset_items.router, prefix="/api/v1")
 app.include_router(exports.router, prefix="/api/v1")
 
+@app.get("/")
+def root():
+    return {
+        "name": settings.PROJECT_NAME,
+        "status": "online",
+        "docs": "/docs",
+        "health": "/health",
+        "api": "/api/v1",
+    }
+
+
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
