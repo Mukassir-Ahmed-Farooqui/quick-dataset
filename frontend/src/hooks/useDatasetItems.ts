@@ -62,7 +62,7 @@ export function useBulkConfirmItems(projectId: string) {
   const key = ['dataset-items', projectId]
   return useMutation({
     mutationFn: (data: { ids: string[]; confirmed: boolean }) => datasetItemsApi.bulkConfirm(projectId, data),
-    onMutate: ({ ids, confirmed }) => patchPagedLists<DatasetItemOut>(qc, key, patchIds(ids, { confirmed })),
+    onMutate: ({ ids, confirmed }) => patchPagedLists<DatasetItemOut>(qc, key, patchIds<DatasetItemOut>(ids, { confirmed })),
     onError: (_e, _v, snap) => restore(qc, snap),
     onSettled: () => {
       qc.invalidateQueries({ queryKey: key })

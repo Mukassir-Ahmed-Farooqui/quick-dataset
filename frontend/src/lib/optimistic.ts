@@ -33,12 +33,12 @@ export function restore(qc: QueryClient, snapshot: Snapshot | undefined) {
   snapshot?.forEach(([key, data]) => qc.setQueryData(key, data))
 }
 
-export const removeIds = <T extends { id: string }>(ids: string[] | Set<string>) => {
+export const removeIds = <T extends { id: string }>(ids: string[] | Set<string>): ((items: T[]) => T[]) => {
   const set = ids instanceof Set ? ids : new Set(ids)
   return (items: T[]) => items.filter((i) => !set.has(i.id))
 }
 
-export const patchIds = <T extends { id: string }>(ids: string[] | Set<string>, patch: Partial<T>) => {
+export const patchIds = <T extends { id: string }>(ids: string[] | Set<string>, patch: Partial<T>): ((items: T[]) => T[]) => {
   const set = ids instanceof Set ? ids : new Set(ids)
   return (items: T[]) => items.map((i) => (set.has(i.id) ? { ...i, ...patch } : i))
 }
