@@ -72,7 +72,9 @@ export default function ModelPicker({ keyData }: ModelPickerProps) {
         </div>
       ) : isError ? (
         <div className="text-xs text-error">
-          {error instanceof Error ? error.message : 'Could not load models for this key.'}
+          {(error as { status?: number })?.status === 404 || /not found/i.test(error instanceof Error ? error.message : '')
+            ? 'Backend is out of date. Restart it from the latest main.'
+            : error instanceof Error ? error.message : 'Could not load models for this key.'}
         </div>
       ) : (
         <Select

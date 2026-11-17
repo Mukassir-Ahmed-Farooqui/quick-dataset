@@ -10,16 +10,23 @@ export function formatBytes(bytes: number) {
 
 const rtf = typeof Intl !== 'undefined' ? new Intl.RelativeTimeFormat('en', { numeric: 'auto' }) : null
 
+/** Parse an API timestamp. Older backends send naive UTC ("2026-11-17T02:10:00"),
+ *  which browsers read as local time, so treat a missing offset as UTC. */
+export function parseApiDate(iso: string) {
+  const hasZone = /([zZ]|[+-]\d{2}:?\d{2})$/.test(iso)
+  return new Date(hasZone ? iso : `${iso}Z`)
+}
+
 export function timeAgo(iso: string | null | undefined) {
   if (!iso) return '—'
-  const diff = (new Date(iso).getTime() - Date.now()) / 1000
+  const diff = (parseApiDate(iso).getTime() - Date.now()) / 1000
   const abs = Math.abs(diff)
-  if (!rtf) return new Date(iso).toLocaleDateString()
+  if (!rtf) return parseApiDate(iso).toLocaleDateString()
   if (abs < 60) return rtf.format(Math.round(diff), 'second')
   if (abs < 3600) return rtf.format(Math.round(diff / 60), 'minute')
   if (abs < 86400) return rtf.format(Math.round(diff / 3600), 'hour')
   if (abs < 86400 * 30) return rtf.format(Math.round(diff / 86400), 'day')
-  return new Date(iso).toLocaleDateString()
+  return parseApiDate(iso).toLocaleDateString()
 }
 
 export function shortId(id: string) {

@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Optional, Literal, Any, Dict, List
 from pydantic import BaseModel, Field, ConfigDict, model_validator
 
-from app.schemas import GenerationConfigBase  # reuse the shared base
+from app.schemas import GenerationConfigBase, UTCDateTime  # reuse the shared base
 
 
 class LLMResponse(BaseModel):
@@ -44,7 +44,7 @@ class DocumentOut(BaseModel):
     file_size: int
     processing_status: Literal["queued", "parsing", "parsed", "failed"]
     parse_error: Optional[str] = None
-    created_at: datetime
+    created_at: UTCDateTime
 
 
 class DocumentUploadAccepted(BaseModel):
@@ -97,7 +97,7 @@ class ChunkOut(BaseModel):
     chunk_index: int
     content: str
     token_count: int
-    created_at: datetime
+    created_at: UTCDateTime
 
 
 class ChunkUpdate(BaseModel):
@@ -134,7 +134,7 @@ class GAPairOut(BaseModel):
     genre_description: Optional[str]
     audience_title: str
     audience_description: Optional[str]
-    created_at: datetime
+    created_at: UTCDateTime
 
 
 # ── Questions (full CRUD — generate request already lives in schemas.py) ──
@@ -157,8 +157,8 @@ class QuestionOut(BaseModel):
     generation_run_id: Optional[str]
     question: str
     answered: bool
-    reviewed_at: Optional[datetime]
-    created_at: datetime
+    reviewed_at: Optional[UTCDateTime]
+    created_at: UTCDateTime
     document_id: Optional[str] = None
     document_filename: Optional[str] = None
 
@@ -259,8 +259,8 @@ class DatasetItemOut(BaseModel):
     score: Optional[float]
     ai_evaluation: Optional[str]
     confirmed: bool
-    created_at: datetime
-    updated_at: datetime
+    created_at: UTCDateTime
+    updated_at: UTCDateTime
     source_document_filename: Optional[str] = None
     source_chunk_index: Optional[int] = None
 
@@ -339,7 +339,7 @@ class ConversationOut(BaseModel):
     scenario: Optional[str]
     role_a: Optional[str]
     role_b: Optional[str]
-    created_at: datetime
+    created_at: UTCDateTime
 
 
 # ── Generation Runs ──────────────────────────────────────────────────
@@ -357,7 +357,7 @@ class GenerationRunOut(BaseModel):
     status: Literal["queued", "processing", "done", "failed", "cancelled"]
     total_items: int
     processed_items: int
-    created_at: datetime
+    created_at: UTCDateTime
 
 
 # ── Global Search ────────────────────────────────────────────────────
@@ -442,7 +442,7 @@ class ExportOut(BaseModel):
     status: Literal["generating", "ready", "failed"]
     storage_url: Optional[str]
     row_count: Optional[int]
-    created_at: datetime
+    created_at: UTCDateTime
 
 
 # ── Custom Prompts ───────────────────────────────────────────────────
@@ -457,7 +457,7 @@ class PromptOut(BaseModel):
     content: str
     version: int
     is_system_default: bool  # true when no project override exists (version 0)
-    created_at: Optional[datetime] = None
+    created_at: Optional[UTCDateTime] = None
 
 
 class PromptValidationError(BaseModel):

@@ -9,8 +9,30 @@ from app.api import auth, providers, projects, documents, chunks, tasks, ga_pair
 from app.services.llm.http_client import close_http_clients
 
 
+def _ensure_schema() -> None:
+    """Add user_llm_keys.selected_model if the DB predates the model picker,
+    so a forgotten `alembic upgrade head` can't take the Providers page down."""
+    import logging
+    from sqlalchemy import inspect, text
+    from app.core.database import engine
+
+    log = logging.getLogger(__name__)
+    try:
+        insp = inspect(engine)
+        if "user_llm_keys" not in insp.get_table_names():
+            return
+        cols = {c["name"] for c in insp.get_columns("user_llm_keys")}
+        if "selected_model" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE user_llm_keys ADD COLUMN selected_model VARCHAR(255)"))
+            log.warning("Added missing column user_llm_keys.selected_model; run `alembic upgrade head` to sync.")
+    except Exception as exc:  # never block startup on this
+        log.error("Schema check failed: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _ensure_schema()
     yield
     # Close the pooled httpx clients shared by the LLM providers.
     await close_http_clients()

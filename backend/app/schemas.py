@@ -5,7 +5,21 @@ Naming convention: {Entity}Create (request body for POST), {Entity}Update
 """
 from datetime import datetime
 from typing import Optional, Literal, Any
-from pydantic import BaseModel, EmailStr, Field, field_validator, ConfigDict
+from pydantic import BaseModel, EmailStr, Field, field_validator, ConfigDict, PlainSerializer
+from datetime import timezone
+from typing import Annotated
+
+
+def _utc_iso(value: datetime) -> str:
+    # DB timestamps are naive UTC (datetime.utcnow()). Without an offset the
+    # browser parses them as local time, so e.g. IST users saw "6 hours ago"
+    # for something done just now. Always emit an explicit UTC offset.
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.isoformat().replace("+00:00", "Z")
+
+
+UTCDateTime = Annotated[datetime, PlainSerializer(_utc_iso, when_used="json")]
 import re
 
 
@@ -80,7 +94,7 @@ class UserOut(BaseModel):
     username: str
     email: EmailStr
     avatar_url: Optional[str] = None
-    created_at: datetime
+    created_at: UTCDateTime
 
 
 class LoginRequest(BaseModel):
@@ -129,8 +143,8 @@ class LLMKeyOut(BaseModel):
     masked_key: str  # computed field, e.g. "sk-...ab12" — see service layer
     is_default: bool
     is_valid: Optional[bool]
-    last_validated_at: Optional[datetime]
-    created_at: datetime
+    last_validated_at: Optional[UTCDateTime]
+    created_at: UTCDateTime
     selected_model: Optional[str] = None
 
 
@@ -141,7 +155,7 @@ class LLMKeyModelsOut(BaseModel):
     default_model: str
     models: list[dict]
     cached: bool = False
-    fetched_at: Optional[datetime] = None
+    fetched_at: Optional[UTCDateTime] = None
 
 
 class LLMKeyTestResult(BaseModel):
@@ -189,8 +203,8 @@ class ProjectOut(BaseModel):
     description: Optional[str]
     status: str
     default_llm_key: Optional[LLMKeyOut] = None
-    created_at: datetime
-    updated_at: datetime
+    created_at: UTCDateTime
+    updated_at: UTCDateTime
 
 
 class ProjectDetailOut(ProjectOut):
@@ -201,7 +215,7 @@ class ProjectListItemOut(ProjectOut):
     document_count: int
     question_count: int
     dataset_item_count: int
-    last_activity_at: Optional[datetime]
+    last_activity_at: Optional[UTCDateTime]
 
 
 # ── Generation config (shared base — see generation-architecture.md) ──
@@ -270,8 +284,8 @@ class TaskOut(BaseModel):
     completed_count: int
     error_count: int
     error_log: list[TaskErrorEntry]
-    started_at: Optional[datetime]
-    completed_at: Optional[datetime]
+    started_at: Optional[UTCDateTime]
+    completed_at: Optional[UTCDateTime]
 
 
 # ── Usage tracking ───────────────────────────────────────────────────
@@ -286,7 +300,7 @@ class UsageLogOut(BaseModel):
     estimated_cost_usd: Optional[float]
     latency_ms: int
     status: str
-    created_at: datetime
+    created_at: UTCDateTime
 
 
 class UsageSummary(BaseModel):
@@ -296,5 +310,5 @@ class UsageSummary(BaseModel):
     total_cost_usd: float
     by_provider: dict[str, float]  # provider -> cost_usd
     by_task_type: dict[str, float]  # task_type -> cost_usd
-    period_start: datetime
-    period_end: datetime
+    period_start: UTCDateTime
+    period_end: UTCDateTime

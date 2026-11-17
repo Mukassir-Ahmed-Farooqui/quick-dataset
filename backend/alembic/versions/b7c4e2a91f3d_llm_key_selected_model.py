@@ -20,7 +20,15 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+def _has_column() -> bool:
+    insp = sa.inspect(op.get_bind())
+    return any(c["name"] == "selected_model" for c in insp.get_columns("user_llm_keys"))
+
+
 def upgrade() -> None:
+    # Idempotent: the app also adds this column on startup if it's missing.
+    if _has_column():
+        return
     op.add_column(
         'user_llm_keys',
         sa.Column('selected_model', sa.String(length=255), nullable=True),
@@ -30,4 +38,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if not _has_column():
+        return
     op.drop_column('user_llm_keys', 'selected_model')
