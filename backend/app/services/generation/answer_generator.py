@@ -589,6 +589,8 @@ async def generate_answers(
     concurrency: Optional[int] = None,
     max_context_tokens: int = MAX_CONTEXT_TOKENS,
     seed: Optional[int] = None,
+    judge_llm_key_id: Optional[str] = None,
+    judge_model: Optional[str] = None,
 ) -> dict:
     """Generate answers for the specified questions (background task entry point).
 
@@ -726,6 +728,21 @@ async def generate_answers(
         task_id = str(task.id)
 
     runner = LLMRunner(db, project_id, config, model, task_id=task_id, concurrency=concurrency, seed=seed)
+    # A separate judge (another key and/or model) avoids a model grading its
+    # own answers and spreads load across provider rate-limit buckets.
+    judge_runner = runner
+    if evaluate and (judge_llm_key_id or judge_model):
+        judge_config = resolve_llm_config_with_model(
+            db, project_id, user_id,
+            model=judge_model or "",
+            llm_key_id=judge_llm_key_id or llm_key_id,
+            temperature=JUDGE_TEMPERATURE,
+            max_tokens=max_tokens,
+        )
+        jm = judge_config.model or judge_model or default_model_for(getattr(judge_config, "provider", None))
+        judge_config.model = jm
+        judge_runner = LLMRunner(db, project_id, judge_config, jm, task_id=task_id, concurrency=concurrency, seed=seed)
+        logger.info("Judge uses separate model=%s provider=%s", jm, getattr(judge_config, "provider", None))
     errors: list[dict] = []
     pending: list[DatasetItem] = []
     pending_qids: list[str] = []
@@ -797,7 +814,7 @@ async def generate_answers(
 
         if evaluate:
             try:
-                judge_raw = await runner.complete(
+                judge_raw = await judge_runner.complete(
                     render_prompt(eval_template, {"content": context, "text": context,
                                                   "question": q["question"], "answer": answer_text}),
                     temperature=JUDGE_TEMPERATURE, max_tokens=min(max_tokens, 1024),

@@ -56,8 +56,22 @@ def _status_of(exc: BaseException) -> Optional[int]:
     return getattr(exc, "status_code", None)
 
 
+def is_daily_quota(exc: BaseException) -> bool:
+    """A 429 for a per-day quota (Groq TPD/RPD). Retrying for minutes cannot
+    help; the run should stop and say so instead of burning every attempt."""
+    resp = getattr(exc, "response", None)
+    try:
+        body = resp.text if resp is not None else ""
+    except Exception:
+        body = ""
+    text = f"{body} {exc}".lower()
+    return "per day" in text or "(tpd)" in text or "(rpd)" in text
+
+
 def is_retryable(exc: BaseException) -> bool:
     status = _status_of(exc)
+    if status == 429 and is_daily_quota(exc):
+        return False
     if status is not None:
         return status in RETRYABLE_STATUS
     if isinstance(exc, ValueError) and "Unsupported provider" in str(exc):

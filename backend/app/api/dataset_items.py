@@ -122,6 +122,8 @@ async def generate_answers_endpoint(
         "include_cot": getattr(data, "include_cot", None),
         "evaluate": getattr(data, "evaluate", None),
         "min_quality_score": getattr(data, "min_quality_score", None),
+        "judge_llm_key_id": getattr(data, "judge_llm_key_id", None),
+        "judge_model": getattr(data, "judge_model", None),
     })
 
     # Create GenerationRun + Task synchronously so frontend gets real IDs

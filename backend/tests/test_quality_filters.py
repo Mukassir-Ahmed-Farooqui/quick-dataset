@@ -65,3 +65,21 @@ def test_answers_do_not_cite_invisible_source():
     assert f("IDENTIFY is first. The text explains that assets are categorized.") == "IDENTIFY is first. Assets are categorized."
     assert f("According to the source, backups must be offline.") == "Backups must be offline."
     assert f("The text box widget explains nothing.") == "The text box widget explains nothing."
+
+
+def test_daily_quota_429_not_retried():
+    import httpx
+    from app.services.generation.llm_runner import is_retryable
+    req = httpx.Request("POST", "https://api.groq.com/x")
+    body = '{"error":{"message":"Rate limit reached ... on tokens per day (TPD): Limit 200000"}}'
+    resp = httpx.Response(429, text=body, request=req)
+    exc = httpx.HTTPStatusError("429", request=req, response=resp)
+    assert not is_retryable(exc)
+    resp2 = httpx.Response(429, text='{"error":{"message":"tokens per minute (TPM)"}}', request=req)
+    assert is_retryable(httpx.HTTPStatusError("429", request=req, response=resp2))
+
+
+def test_self_revision_prefix_stripped():
+    from app.services.generation.question_postprocess import clean_question
+    q = clean_question('Better: "What type of risk response relies on existing security controls?')
+    assert q == "What type of risk response relies on existing security controls?"

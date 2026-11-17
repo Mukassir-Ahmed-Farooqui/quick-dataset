@@ -33,15 +33,27 @@ class GeminiProvider(BaseLLMProvider):
             "contents": contents,
             "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens},
         }
+        # Gemini 2.5 counts hidden thinking against maxOutputTokens; without a
+        # cap a small max_tokens can be spent entirely on thinking and return
+        # no text. Keep at least half the budget for the visible answer.
+        if "2.5" in model:
+            body["generationConfig"]["thinkingConfig"] = {"thinkingBudget": max(0, min(2048, max_tokens // 2))}
         if system_instruction:
             body["systemInstruction"] = system_instruction
 
-        url = f"{self.base_url}/models/{model}:generateContent?key={self.api_key}"
-        response = await client.post(url, json=body)
+        # Key in a header, never the URL: query strings end up in proxy and
+        # access logs.
+        url = f"{self.base_url}/models/{model}:generateContent"
+        response = await client.post(url, json=body, headers={"x-goog-api-key": self.api_key})
         response.raise_for_status()
         data = response.json()
 
-        text = data["candidates"][0]["content"]["parts"][0]["text"]
+        candidates = data.get("candidates") or []
+        parts = (candidates[0].get("content") or {}).get("parts") or [] if candidates else []
+        text = "".join(p.get("text", "") for p in parts if not p.get("thought"))
+        if not text.strip():
+            reason = candidates[0].get("finishReason") if candidates else data.get("promptFeedback")
+            raise ValueError(f"Gemini returned no text (finishReason={reason})")
         usage = data.get("usageMetadata", {})
         return LLMResponse(
             content=text,
@@ -55,10 +67,13 @@ class GeminiProvider(BaseLLMProvider):
         models: list[dict] = []
         page_token = None
         for _ in range(10):  # paginate defensively
-            params = {"key": self.api_key, "pageSize": 1000}
+            params = {"pageSize": 1000}
             if page_token:
                 params["pageToken"] = page_token
-            response = await client.get(f"{self.base_url}/models", params=params)
+            response = await client.get(
+                f"{self.base_url}/models", params=params,
+                headers={"x-goog-api-key": self.api_key},
+            )
             response.raise_for_status()
             data = response.json()
             models.extend(data.get("models") or [])

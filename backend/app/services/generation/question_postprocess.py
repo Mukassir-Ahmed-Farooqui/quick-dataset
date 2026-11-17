@@ -116,6 +116,8 @@ def clean_question(raw: object) -> Optional[str]:
     q = raw.strip().strip("\"'`").strip()
     q = _NUMBERING_RE.sub("", q).strip().strip("\"'`").strip()
     q = re.sub(r"\s+", " ", q)
+    # Self-revision leaks: 'Better: "What ...?' / 'Revised question: ...'
+    q = re.sub(r'^(?:better|revised(?: question)?|improved(?: question)?|rewrite|rewritten)\s*:\s*["\'`]?', "", q, flags=re.I).strip().strip("\"'`").strip()
 
     # Strip forbidden lead-ins ("According to the text, what ...")
     stripped = _LEADIN_RE.sub("", q)
