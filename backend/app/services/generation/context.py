@@ -127,6 +127,16 @@ def _snap_to_paragraph(text: str, pos: int, window: int = 300) -> int:
     return idx + 1 if idx != -1 else pos
 
 
+def _snap_forward_to_paragraph(text: str, pos: int, window: int = 300) -> int:
+    """Move ``pos`` forward to the next paragraph/line start within ``window``."""
+    hi = min(len(text), pos + window)
+    idx = text.find("\n\n", pos, hi)
+    if idx != -1:
+        return idx + 2
+    idx = text.find("\n", pos, hi)
+    return idx + 1 if idx != -1 else pos
+
+
 def build_document_digest(
     text: str,
     *,
@@ -160,9 +170,18 @@ def build_document_digest(
     n = len(text)
     parts = []
     for i in range(excerpts):
+        is_last = i == excerpts - 1
         start = int(i * (n - per) / (excerpts - 1)) if excerpts > 1 else 0
-        start = _snap_to_paragraph(text, start) if i > 0 else 0
-        piece = text[start:start + per].strip()
+        if is_last:
+            # Anchor the final excerpt to the end of the document. Snapping
+            # backwards and then slicing ``per`` chars would cut off the tail,
+            # so snap *forward* to a paragraph start and always run to ``n``.
+            start = _snap_forward_to_paragraph(text, start)
+            end = n
+        else:
+            start = _snap_to_paragraph(text, start) if i > 0 else 0
+            end = start + per
+        piece = text[start:end].strip()
         if not piece:
             continue
         pct = int(round(100 * start / n))
