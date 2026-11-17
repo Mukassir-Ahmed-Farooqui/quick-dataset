@@ -24,6 +24,7 @@ import email.utils
 import logging
 import os
 import random
+import re
 import time
 from typing import Any, Awaitable, Callable, Iterable, Optional, Sequence, TypeVar
 
@@ -40,6 +41,8 @@ R = TypeVar("R")
 
 DEFAULT_CONCURRENCY = int(os.getenv("GENERATION_CONCURRENCY", "8"))
 DEFAULT_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "4"))
+# Rate limits clear on their own; give them a longer runway than other errors.
+DEFAULT_MAX_RATE_LIMIT_RETRIES = int(os.getenv("LLM_MAX_RATE_LIMIT_RETRIES", "10"))
 DEFAULT_BASE_DELAY = float(os.getenv("LLM_RETRY_BASE_DELAY", "1.0"))
 DEFAULT_MAX_DELAY = float(os.getenv("LLM_RETRY_MAX_DELAY", "60"))
 MAX_CONCURRENCY = 64
@@ -62,25 +65,48 @@ def is_retryable(exc: BaseException) -> bool:
     return True  # timeouts, transport errors, malformed provider bodies
 
 
+_DURATION_RE = re.compile(r"(?:(\d+(?:\.\d+)?)h)?(?:(\d+(?:\.\d+)?)m(?!s))?(?:(\d+(?:\.\d+)?)s)?(?:(\d+(?:\.\d+)?)ms)?$")
+
+
+def _parse_duration(value: str) -> Optional[float]:
+    """Parse '12', '12.5s', '577ms', '1m2.5s' or '1h9m7.2s' into seconds."""
+    value = value.strip()
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    m = _DURATION_RE.match(value)
+    if not m or not any(m.groups()):
+        return None
+    h, mi, sec, ms = (float(g) if g else 0.0 for g in m.groups())
+    return max(0.0, h * 3600 + mi * 60 + sec + ms / 1000)
+
+
 def retry_after_seconds(exc: BaseException) -> Optional[float]:
-    """Parse a Retry-After header (seconds or HTTP-date)."""
+    """How long a 429 asks us to wait.
+
+    Order: ``Retry-After`` (seconds or HTTP-date), then the per-minute token
+    window (``x-ratelimit-reset-tokens``). ``x-ratelimit-reset-requests`` is
+    deliberately ignored: on Groq it is the *daily* request window, so honouring
+    it would stall a run for an hour on a token-per-minute 429.
+    """
     resp = getattr(exc, "response", None)
     headers = getattr(resp, "headers", None)
     if not headers:
         return None
-    value = headers.get("retry-after") or headers.get("x-ratelimit-reset-requests")
-    if not value:
-        return None
-    value = str(value).strip()
-    try:
-        return max(0.0, float(value.rstrip("s")))
-    except ValueError:
-        pass
-    try:
-        dt = email.utils.parsedate_to_datetime(value)
-        return max(0.0, dt.timestamp() - time.time())
-    except (TypeError, ValueError):
-        return None
+    for name in ("retry-after", "x-ratelimit-reset-tokens"):
+        value = headers.get(name)
+        if not value:
+            continue
+        secs = _parse_duration(str(value))
+        if secs is not None:
+            return secs
+        try:
+            dt = email.utils.parsedate_to_datetime(str(value).strip())
+            return max(0.0, dt.timestamp() - time.time())
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def backoff_delay(attempt: int, base: float, cap: float, rng: random.Random) -> float:
@@ -136,7 +162,7 @@ class LLMRunner:
         """
         messages = [{"role": "user", "content": prompt}] if isinstance(prompt, str) else prompt
         last_exc: Optional[BaseException] = None
-        for attempt in range(self.max_retries + 1):
+        for attempt in range(max(self.max_retries, DEFAULT_MAX_RATE_LIMIT_RETRIES) + 1):
             wait = self._pause_until - time.monotonic()
             if wait > 0:
                 await asyncio.sleep(wait)
@@ -162,7 +188,10 @@ class LLMRunner:
                 finally:
                     self.in_flight -= 1
 
-            if attempt >= self.max_retries or not is_retryable(last_exc):
+            limit = self.max_retries
+            if _status_of(last_exc) == 429:
+                limit = max(self.max_retries, DEFAULT_MAX_RATE_LIMIT_RETRIES)
+            if attempt >= limit or not is_retryable(last_exc):
                 break
             delay = backoff_delay(attempt, self.base_delay, self.max_delay, self._rng)
             if _status_of(last_exc) == 429:
@@ -173,7 +202,7 @@ class LLMRunner:
                 self._pause_until = max(self._pause_until, time.monotonic() + delay)
             logger.warning(
                 "LLM call failed (attempt %d/%d), retrying in %.1fs: %s",
-                attempt + 1, self.max_retries + 1, delay, last_exc,
+                attempt + 1, limit + 1, delay, last_exc,
             )
             await asyncio.sleep(delay)
         assert last_exc is not None

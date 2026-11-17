@@ -49,10 +49,29 @@ _META_PATTERNS = [
     r"\bthe\s+author(?:s)?\s+(?:of|say|says|state|states|argue|argues|mention|mentions|believe|believes)\b",
     r"\b(?:which|what)\s+(?:chapter|section|page|heading)\b",
     r"\btable\s+of\s+contents\b",
+    # Page / layout / bibliographic trivia: useless for fine-tuning.
+    r"\bpage\s+\d+\b",
+    r"\b(?:figure|fig\.|table|appendix)\s+[A-Z0-9][\w.-]*\b",
+    r"\b(?:errata|erratum)\b",
+    r"\b(?:url|web\s+address|hyperlink)\b.*\b(?:provide|access|found|located)",
+    r"\bwhat\s+(?:information|content)\s+is\s+(?:presented|provided|shown|listed)\b",
+    r"\b(?:subsection|section)\s+titles?\b",
+    r"\b(?:publication|release)\s+(?:date|month|year)\b",
+    # Pronoun-style references to a document the fine-tuned model never sees.
+    r"\b(?:the|this)\s+(?:guide|guideline|guidelines|publication|paper|manual|handbook|playbook|standard)\b(?!\s+(?:for|on|to)\b)",
     r"\bwhat\s+is\s+the\s+title\s+of\b",
     r"\b(?:mentioned|discussed|described|stated)\s+(?:in|by)\s+the\s+(?:text|passage|article|document|author|report)\b",
 ]
 _META_RE = re.compile("|".join(_META_PATTERNS), re.IGNORECASE)
+
+# Model "thinking out loud" that leaks through when it cannot find a question
+# (e.g. "Maybe we should output an empty JSON array?").
+_REASONING_LEAK_RE = re.compile(
+    r"\b(?:json|array|the\s+instruction|the\s+prompt|output\s+(?:only|an?\s+empty|nothing)|"
+    r"we\s+(?:should|need|must|can)|let'?s|i\s+(?:will|should|need|can(?:not|'t)?)|impossible\s+task|"
+    r"no\s+(?:valid\s+)?questions?\s+can)\b",
+    re.IGNORECASE,
+)
 
 # A kept item must actually read as a question: either it ends with a
 # question mark, or it opens with an interrogative / question-style
@@ -108,6 +127,8 @@ def clean_question(raw: object) -> Optional[str]:
     if len(q) > MAX_QUESTION_CHARS:
         return None
     if is_meta_question(q):
+        return None
+    if _REASONING_LEAK_RE.search(q):
         return None
     if not looks_like_question(q):
         return None
@@ -184,7 +205,7 @@ def _fallback_line_parse(text: str) -> list[str]:
         line = _NUMBERING_RE.sub("", line).strip().strip("\"'").strip()
         if "?" in line and not line.endswith("?"):
             line = line[: line.rfind("?") + 1]
-        if line:
+        if line and looks_like_question(line) and not _REASONING_LEAK_RE.search(line):
             out.append(line)
     return out
 
@@ -194,6 +215,10 @@ def parse_questions_output(raw_output: Optional[str]) -> list[str]:
     if not raw_output:
         return []
     data = extract_json(raw_output, expect=list)
+    if isinstance(data, list) and not data:
+        # An explicit [] means "this chunk has nothing worth asking". Do not
+        # fall back to scraping the model's reasoning for stray "?" lines.
+        return []
     if isinstance(data, list):
         items: list[str] = []
         for d in data:

@@ -621,6 +621,21 @@ async def generate_answers(
                 "metadata": c.chunk_metadata if isinstance(c.chunk_metadata, dict) else None,
             }
 
+    # Tell the model which document a chunk comes from, so questions can name
+    # it ("In NIST SP 800-61r3, ...") instead of saying "the guide".
+    _doc_ids = {c["document_id"] for c in chunks.values() if c.get("document_id")}
+    if _doc_ids:
+        from app.models import Document as _Document
+        from app.services.generation.context import source_title_from_filename
+        _titles = {
+            str(d.id): source_title_from_filename(d.filename)
+            for d in db.query(_Document).filter(_Document.id.in_(list(_doc_ids))).all()
+        }
+        for _c in chunks.values():
+            _t = _titles.get(_c.get("document_id") or "")
+            if _t:
+                _c["metadata"] = {**(_c.get("metadata") or {}), "source_title": _t}
+
     ga_ids = list({q["ga_pair_id"] for q in questions if q["ga_pair_id"]})
     ga_pairs: dict[str, dict] = {}
     if ga_ids:

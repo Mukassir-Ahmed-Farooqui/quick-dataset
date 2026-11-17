@@ -96,7 +96,7 @@ QUESTION_PROMPT = """# Role: Text Question Generation Expert
 4. Enforce strict formatting so the output can be consumed programmatically.
 
 ## Workflow:
-1. **Text Parsing**: Read the entire passage (the "Section:" line, if present, only tells you where the passage sits in a larger document) and note key entities, events, metrics, definitions, steps, and conclusions.
+1. **Text Parsing**: Read the entire passage (the "Source document:" and "Section:" lines, if present, only tell you where the passage comes from) and note key entities, events, metrics, definitions, steps, and conclusions.
 2. **Question Design**: Select the most informative focal points and craft questions{ga_prompt_note}.
 3. **Quality Check**: Validate every question:
    - Its answer can be found in, or directly derived from, the passage alone.
@@ -112,9 +112,12 @@ QUESTION_PROMPT = """# Role: Text Question Generation Expert
 4. Never use phrases such as "according to the text/article/passage/document/report", "in this passage", or "the author says"; questions must read naturally on their own.
 5. Do not ask yes/no questions or questions whose answer is a single trivial word unless the fact is genuinely important.
 6. Output exactly {questions_per_combination} question(s), each a single sentence ending with a question mark.
+7. Never ask bibliographic or administrative trivia: URLs, DOIs, errata, revision history, publication dates, figure or table numbers, appendix names, acknowledgments, reference lists, or contact details.
+8. Questions are used to fine-tune a model that will NOT see this passage. Never refer to "the guide", "the guideline", "the publication", "the report", "the recommendation", or a bare label such as "R3" or "N1". When the subject belongs to a named framework, standard, product, or document (see "Source document:"), name it explicitly.
+9. If the passage is boilerplate with nothing worth learning (a table of contents, index, reference list, running headers, legal notice, or a near-empty page), return an empty array [] instead of inventing questions.
 
 ## Output Format:
-Return ONLY a valid JSON array of strings, double-quoted, with no commentary:
+Return ONLY a valid JSON array of strings, double-quoted, with no commentary (or [] when rule 9 applies):
 ```json
 ["Question 1?", "Question 2?"]
 ```

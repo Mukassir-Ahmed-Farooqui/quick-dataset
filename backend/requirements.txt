@@ -13,3 +13,4 @@ pdfplumber
 httpx
 tiktoken
 langchain-text-splitters
+python-docx
