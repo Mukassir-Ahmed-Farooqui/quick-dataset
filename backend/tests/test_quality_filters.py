@@ -45,3 +45,16 @@ def test_context_drops_page_markers_and_names_source():
     assert "Page 7" not in ctx
     assert "Source document: nist csf 2.0" in ctx
     assert source_title_from_filename("sp800-61r3_incident_response.pdf") == "sp800-61r3 incident response"
+
+
+def test_merge_small_chunks_drops_markers_and_folds_tiny():
+    from app.services.chunking import merge_small_chunks
+    out = merge_small_chunks(["## Page 7", "x" * 300, "tiny", "y" * 300], 200)
+    assert out == ["x" * 300 + "\n\ntiny", "y" * 300]
+
+
+def test_pdf_clean_pages_strips_headers_and_toc():
+    from app.services.parsing.pdf_parser import clean_pages
+    pages = [["NIST SP 800-61r3", f"Body about topic {chr(64 + i)}", "1.2 Purpose ........ 4", str(i)] for i in range(1, 9)]
+    cleaned = clean_pages(pages)
+    assert all(p == [f"Body about topic {chr(64 + i)}"] for i, p in enumerate(cleaned, 1))
