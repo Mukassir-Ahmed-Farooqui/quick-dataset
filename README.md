@@ -47,6 +47,7 @@
 ## 📑 Table of Contents
 
 - [Project Overview](#-project-overview)
+- [Project Status](#-project-status)
 - [Features](#-features)
 - [Tech Stack](#-tech-stack)
 - [Architecture](#-architecture)
@@ -98,8 +99,9 @@ Fine-tuning LLMs requires high-quality custom datasets, but turning source mater
 | **Document Ingestion** | Upload PDF, DOCX, Markdown, and TXT files with MD5 deduplication |
 | **Intelligent Chunking** | Split documents using recursive, markdown-aware, or token-based strategies with live preview |
 | **Genre/Audience Diversification** | Generate Genre/Audience pairs to diversify question style across chunks |
-| **Question Generation** | Generate questions per chunk, optionally crossed with GA pairs |
-| **Answer Generation** | Produce QA pairs, MCQs, or Classification labels with optional Chain-of-Thought |
+| **Question Generation** | Question count scales with chunk length; GA pairs are distributed across chunks; questions are cleaned, filtered and de-duplicated |
+| **Answer Generation** | Grounded answers (temp 0.3) as QA pairs, strictly validated MCQs, or Classification labels, with optional Chain-of-Thought |
+| **Quality Gate** | Free local grounding check on every item, plus an optional LLM judge (separate model/key, backup judge, re-judge endpoint) |
 | **Human Review** | Bulk review, edit, confirm, and delete at every pipeline stage |
 | **Multi-Format Export** | Export to JSON, JSONL, Alpaca, and ShareGPT formats with filter controls |
 | **Cost Transparency** | See projected token count and cost *before* every generation step |
@@ -112,6 +114,29 @@ Fine-tuning LLMs requires high-quality custom datasets, but turning source mater
 - **Soft Deletes Everywhere** — Every entity with downstream dependents uses `deleted_at`. Accidental deletes are always reversible.
 - **Append-Only Prompt Versioning** — Prompt edits create new versions; old generation runs still point to the exact prompt that produced them.
 - **Single Tracked Call Wrapper** — Every LLM call in the app passes through `tracked_complete()`, guaranteeing exactly one usage log row per call.
+- **Concurrent, Session-Safe Generation** — `LLMRunner` runs LLM calls in parallel (default 8) with rate-limit-aware retries, while every DB write stays in one coroutine.
+- **Grounded by Default** — Prompts carry the chunk plus its section path; answers are checked locally against the source before any paid judge call.
+
+---
+
+## 📍 Project Status
+
+_Last updated: 2026-11-21._ `main` holds the accuracy pipeline and the first Mindcase UI. Three draft PRs carry the rest.
+
+| Track | Done | Left | Progress |
+| --- | --- | --- | --- |
+| Backend accuracy + speed | Easy Dataset prompts, dedupe, smart question counts, parallel calls, grounded answers at temp 0.3, strict MCQ checks, chain of thought, optional quality judge, GA from the whole doc, endpoints wired, test suite | Fix 2 failing tests (a non-question reply slips through, GA digest drops the doc's last part), open the draft PR | About 90% |
+| Mindcase UI + UX | Theme and fonts, sidebar, pipeline stepper with Next button, shortcuts with ? help, Documents, Chunks, GA Pairs, Questions, Review, Export | Landing, Dashboard, Login, Register, Projects, Create, Overview, Providers, 404; remove a duplicate progress panel; passing build; open the draft PR | About 65% |
+
+### Open pull requests
+
+| PR | Branch | What it adds |
+| --- | --- | --- |
+| #3 (draft) | `fix/backend-accuracy-tests` | Rejects non-question LLM replies; GA digest now covers the end of the document (fixes the 2 failing tests) |
+| #4 (draft) | `feat/mindcase-ui-pages` | Mindcase Projects list, Create project and Overview; removes the duplicate pipeline progress panel |
+| #6 (draft) | `fix/groq-rate-limits` | Groq rate-limit handling, PDF header/sidebar/TOC cleanup, local grounding check, separate + backup judge, `/rejudge`, stricter judge rules |
+
+Backend tests: 108 pass on `main`; 120 pass with #3 and #6 applied.
 
 ---
 
@@ -136,12 +161,15 @@ Fine-tuning LLMs requires high-quality custom datasets, but turning source mater
 - Key validation via real provider test connection
 - Masked key display in all API responses — raw keys never echoed back
 - Key rotation support (update API key while keeping the same record)
+- Per-key model picker backed by each provider's live model list (`GET /providers/{key_id}/models`)
+- Separate judge key/model per run, so a model never grades its own answers
 
 ### 📄 Document Processing
 - Multi-file drag-and-drop upload
 - Supported formats: PDF (via pdfplumber), DOCX (via python-docx), Markdown, Plain Text
 - MD5-based deduplication — prevents re-uploading identical files
 - Background parsing with live status tracking (queued → parsing → parsed/failed)
+- PDF clean-up: running headers, rotated sidebar text and table-of-contents leaders are stripped; tiny chunks are merged
 - Documents stored in local `storage/` directory (R2 integration planned for production)
 
 ### 🧩 Chunking Engine
@@ -158,18 +186,23 @@ Fine-tuning LLMs requires high-quality custom datasets, but turning source mater
 - CRUD with update support
 
 ### ❓ Question Generation
-- Generate questions per chunk, optionally crossed with GA pairs
-- Combinatorial: N chunks × M GA pairs × Q questions-per-combination
-- Live cost estimate panel updates as selections change
-- Bulk review UI with multi-select, inline edit, search, and filters (status, chunk, GA pair, generation run)
+- **Smart question counts** (`auto` mode, default): each chunk gets `floor(len(chunk) / 240)` questions (min 1, max 10), Easy Dataset style
+- GA pairs are **distributed** across a chunk's questions (pairs from the chunk's own document preferred) instead of multiplying every chunk by every pair; the legacy cross product is still available as `per_combination`
+- Each prompt gets the chunk with its section path and the full genre/audience descriptions
+- Post-processing on every batch: JSON-first parsing with a numbered-list fallback, lead-in stripping ("According to the text…"), meta/junk/reasoning-leak filters, non-question rejection, and exact + near-duplicate removal (ratio 0.88 / Jaccard 0.85)
+- Estimate endpoint uses the **same planner** as the real run, so projected counts match
+- Bulk review UI with multi-select, inline edit, search, and filters (status, chunk, GA pair, generation run); per-document stats via `/questions/stats`
 - Manual question creation alongside LLM generation
 
 ### ✅ Answer Generation & Dataset Items
 - Three dataset types: **QA** (question/answer), **MCQ** (question/options/correct_answer), **Classification** (text/label)
-- JSONB payload per dataset type — validated via Pydantic discriminated unions (`QAPayload`, `MCQPayload`, `ClassificationPayload`)
-- Optional Chain-of-Thought generation
+- **Grounded answers** at temperature 0.3: chunk content with section prefix, token-aware truncation (6,000 tokens), GA guidance block when the question came from a GA pair
+- **Strict MCQ validation**: the correct answer must map to exactly one option; ambiguous output is rejected, never silently set to option A
+- Referential lead-ins and stray markdown are cleaned from answers so items read self-contained
+- **Chain-of-Thought**: kept from a model's `<think>` block, or produced with one `cot_synthesis` call
+- **Local grounding check** (free, no model): flags answers that introduce names, numbers or terms not in the source, and questions that depend on unseen context; ungrounded items skip the judge and are capped
+- **Optional LLM judge** (`evaluate=true`): scores 0–1 at temperature 0, with a separate judge key/model, a backup judge on failure, and `min_quality_score` flagging; unjudged items are held for `/rejudge` *(judge extras land with PR #6)*
 - Bulk confirm/delete operations (up to 2000 items)
-- AI evaluation scoring (schema ready, generation not yet implemented)
 - Denormalized source tracking: every dataset item links back to its source document and chunk
 
 ### 📦 Export System
@@ -263,88 +296,145 @@ Fine-tuning LLMs requires high-quality custom datasets, but turning source mater
 
 ```mermaid
 graph TB
-    subgraph Client["🖥️ Frontend — React 19 + TypeScript"]
-        UI["UI Components<br/>(Radix + Tailwind)"]
-        State["TanStack Query<br/>(Server State)"]
-        Auth["AuthContext<br/>(JWT Tokens)"]
+    subgraph Client["🖥️ Frontend — React 19 + TypeScript (Mindcase UI)"]
+        UI["Feature pages + pipeline stepper<br/>(Radix + Tailwind)"]
+        State["TanStack Query<br/>(server state, task polling)"]
+        Auth["AuthContext<br/>(JWT tokens)"]
     end
 
     subgraph Server["⚙️ Backend — FastAPI"]
-        API["API Layer<br/>(12 route modules)"]
-        Services["Service Layer<br/>(Generation, Parsing, Chunking, LLM)"]
-        Repos["Repository Layer<br/>(Soft-delete-aware queries)"]
-        Models["Model Layer<br/>(SQLAlchemy ORM, 15 tables)"]
+        API["API layer<br/>(12 routers, /api/v1)"]
+        BG["BackgroundTasks<br/>(202 + task_id)"]
+        Gen["Generation services<br/>(GA · questions · answers)"]
+        Quality["Quality<br/>(grounding · judge · rejudge)"]
+        Runner["LLMRunner<br/>(concurrency + retries)"]
+        Tracked["tracked_complete()<br/>(usage + cost log)"]
+        Repos["Repositories<br/>(soft-delete aware)"]
     end
 
     subgraph External["☁️ External"]
         DB[("PostgreSQL<br/>(Neon)")]
-        LLM["LLM Providers<br/>(OpenRouter / OpenAI / Groq / Gemini)"]
-        Storage["File Storage<br/>(Local / R2)"]
+        LLM["LLM providers<br/>(OpenRouter / OpenAI / Groq / Gemini)"]
+        Storage["File storage<br/>(backend/storage)"]
     end
 
-    Client -->|REST API / JSON| Server
-    API --> Services
-    Services --> Repos
-    Services -->|tracked_complete| LLM
-    Repos --> Models
-    Models --> DB
-    Services --> Storage
+    Client -->|REST / JSON| API
+    API --> BG --> Gen
+    Gen --> Quality
+    Gen --> Runner --> Tracked --> LLM
+    Quality --> Runner
+    API --> Repos --> DB
+    Gen --> Repos
+    API --> Storage
 ```
 
-### Backend Layer Architecture
+### Backend Layers
 
 ```mermaid
 graph TD
-    subgraph API["API Layer (app/api/)"]
-        A1[auth]
-        A2[providers]
-        A3[projects]
-        A4[documents]
-        A5[chunks]
-        A6[ga_pairs]
-        A7[questions]
-        A8[dataset_items]
-        A9[exports]
-        A10[prompts]
-        A11[search]
-        A12[tasks]
+    subgraph API["API (app/api/)"]
+        A1[auth] --- A2[providers] --- A3[projects] --- A4[documents]
+        A5[chunks] --- A6[ga_pairs] --- A7[questions] --- A8[dataset_items]
+        A9[exports] --- A10[prompts] --- A11[search] --- A12[tasks]
     end
 
-    subgraph Services["Service Layer (app/services/)"]
-        S1[parsing/<br/>PDF, DOCX, MD, TXT]
-        S2[chunking/<br/>recursive, markdown, token]
-        S3[generation/<br/>GA, question, answer<br/>resolver, estimator]
-        S4[llm/<br/>tracked_call, provider_factory<br/>4 provider clients]
-        S5[prompts/<br/>versioning, templates]
-        S6[usage/<br/>cost tracking]
-    end
-
-    subgraph Repos["Repository Layer (app/repositories/)"]
-        R1[user_repository]
-        R2[llm_key_repository]
-        R3[project_repository]
-        R4[document_repository]
-        R5[chunk_repository]
-        R6[ga_pair_repository]
-        R7[question_repository]
-        R8[task_repository]
+    subgraph Services["Services (app/services/)"]
+        S1["parsing/<br/>PDF · DOCX · MD · TXT → markdown"]
+        S2["chunking/<br/>recursive · markdown · token"]
+        S3["generation/<br/>planning · question_generator · question_postprocess<br/>answer_generator · ga_generator · context<br/>llm_runner · json_utils · resolver · estimator<br/>generation_run_service"]
+        S7["quality/<br/>grounding · rejudge"]
+        S4["llm/<br/>tracked_call · provider_factory · http_client<br/>model_catalog · 4 provider clients"]
+        S5["prompts/<br/>versioned templates"]
+        S6["usage/<br/>cost tracking"]
     end
 
     subgraph Core["Core (app/core/)"]
-        C1[config — Settings]
-        C2[security — JWT + bcrypt]
-        C3[crypto — Fernet encrypt/decrypt]
-        C4[pricing — Model pricing registry]
-        C5[exceptions — AppException + error codes]
-        C6[database — Engine + SessionLocal]
+        C1[config] --- C2[security] --- C3[crypto] --- C4[pricing] --- C5[exceptions] --- C6[database]
     end
 
     API --> Services
-    API --> Repos
+    API --> Repos["repositories/ (8)"]
     Services --> Repos
     Services --> Core
-    Repos --> Models["models.py<br/>(15 tables)"]
+    Repos --> Models["models.py (15 tables)"]
 ```
+
+| Layer | Responsibility |
+|:---|:---|
+| `api/` | Validates requests, checks ownership, creates the `GenerationRun` + `Task`, schedules background work, returns `202` |
+| `services/generation/` | Plans jobs, renders prompts, runs LLM calls concurrently, parses/cleans output, writes rows |
+| `services/quality/` | Local grounding check and judge re-scoring, no regeneration |
+| `services/llm/` | One interface over 4 providers; `tracked_complete()` logs every call to `llm_usage_logs` |
+| `services/prompts/` | Default + per-project custom prompts, append-only versions |
+| `repositories/` | All DB access, soft-delete aware |
+| `core/` | Settings, JWT + bcrypt, Fernet key encryption, pricing registry, error codes |
+
+### Generation Pipeline
+
+```mermaid
+graph LR
+    A["📄 Upload<br/>PDF/DOCX/MD/TXT"] -->|parse + clean| B["🧩 Chunk<br/>recursive/markdown/token"]
+    B -->|whole-doc digest| C["🎭 GA Pairs<br/>validated + deduped"]
+    B --> P["📐 Plan<br/>len/240 per chunk,<br/>GA pairs distributed"]
+    C --> P
+    P -->|LLMRunner| D["❓ Questions<br/>clean · filter · dedupe"]
+    D -->|LLMRunner| E["✅ Answers<br/>grounded, temp 0.3<br/>strict MCQ · CoT"]
+    E --> G{"🔎 Local<br/>grounding"}
+    G -->|grounded + evaluate| J["⚖️ LLM judge<br/>(separate/backup model)"]
+    G -->|ungrounded| R["Flagged, score capped"]
+    J --> F["📦 Review + Export<br/>JSON/JSONL/Alpaca/ShareGPT"]
+    R --> F
+
+    style A fill:#1e293b,stroke:#38bdf8,color:#f1f5f9
+    style B fill:#1e293b,stroke:#38bdf8,color:#f1f5f9
+    style C fill:#1e293b,stroke:#38bdf8,color:#f1f5f9
+    style P fill:#1e293b,stroke:#38bdf8,color:#f1f5f9
+    style D fill:#1e293b,stroke:#38bdf8,color:#f1f5f9
+    style E fill:#1e293b,stroke:#38bdf8,color:#f1f5f9
+    style G fill:#1e293b,stroke:#f59e0b,color:#f1f5f9
+    style J fill:#1e293b,stroke:#f59e0b,color:#f1f5f9
+    style R fill:#1e293b,stroke:#ef4444,color:#f1f5f9
+    style F fill:#1e293b,stroke:#22c55e,color:#f1f5f9
+```
+
+### How a Generation Run Executes
+
+```mermaid
+sequenceDiagram
+    participant UI as Frontend
+    participant API as FastAPI route
+    participant BG as BackgroundTask
+    participant RS as resolver
+    participant LR as LLMRunner (N workers)
+    participant TC as tracked_complete
+    participant P as Provider
+    participant DB as PostgreSQL
+
+    UI->>API: POST /questions/estimate
+    API-->>UI: counts, tokens, cost (same planner, no LLM)
+    UI->>API: POST /questions/generate
+    API->>DB: create GenerationRun + Task
+    API-->>UI: 202 { task_id }
+    API->>BG: schedule generator
+    BG->>RS: resolve key + model (request → project default → first key)
+    BG->>LR: submit jobs (snapshots, no ORM objects)
+    loop each job, up to GENERATION_CONCURRENCY in parallel
+        LR->>TC: complete(prompt)
+        TC->>P: HTTP call (timeout, retry on 429/5xx, Retry-After honoured)
+        P-->>TC: text + usage
+        TC-->>LR: result + deferred usage row
+    end
+    LR->>DB: single consumer writes rows, usage logs, progress
+    UI->>API: GET /tasks/{task_id} (poll)
+    API-->>UI: progress / done / errors
+```
+
+Key rules the code enforces:
+
+- **One chokepoint per concern**: `resolve_llm_config()` for keys/models, `tracked_complete()` for calls, `GenerationRunService` for lineage.
+- **Workers never touch the Session**: they get plain-dict snapshots; usage rows are deferred and written by the consumer.
+- **Retries**: up to `LLM_MAX_RETRIES` for transient errors and `LLM_MAX_RATE_LIMIT_RETRIES` for 429s with exponential backoff; a daily-quota 429 fails fast instead of waiting.
+- **JSON from any model**: `json_utils.extract_json` strips `<think>` blocks, code fences and chatter, repairs trailing commas and smart quotes.
 
 ### Request Lifecycle
 
@@ -384,67 +474,50 @@ sequenceDiagram
     U->>F: Enter email + password
     F->>B: POST /api/v1/auth/login
     B->>B: Verify password (bcrypt)
-    B->>B: Create access token (15 min)
-    B->>B: Create refresh token (30 days)
+    B->>B: Create access token (15 min) + refresh token (30 days)
     B-->>F: { access_token, refresh_token, user }
-    F->>F: Store tokens in localStorage
-    F->>F: Set user in AuthContext
-
-    Note over F,B: On subsequent requests
-    F->>B: Request with Bearer token
-    B->>B: Decode JWT, validate
+    F->>F: Store tokens, set user in AuthContext
 
     Note over F,B: On 401 (token expired)
-    F->>F: Queue failed request
+    F->>F: Queue failed requests
     F->>B: POST /api/v1/auth/refresh
-    B-->>F: New access + refresh tokens
-    F->>F: Retry queued requests with new token
+    B-->>F: New tokens
+    F->>F: Replay queued requests
 ```
 
-### Generation Pipeline Flow
-
-```mermaid
-graph LR
-    A["📄 Upload<br/>PDF/DOCX/MD/TXT"] -->|parse| B["🧩 Chunk<br/>recursive/markdown/token"]
-    B -->|generate| C["🎭 GA Pairs<br/>Genre + Audience"]
-    B -->|select chunks| D["❓ Questions<br/>per chunk × GA pair"]
-    C -->|select GA pairs| D
-    D -->|select questions| E["✅ Answers<br/>QA / MCQ / Classification"]
-    E -->|review + confirm| F["📦 Export<br/>JSON/JSONL/Alpaca/ShareGPT"]
-
-    style A fill:#1e293b,stroke:#38bdf8,color:#f1f5f9
-    style B fill:#1e293b,stroke:#38bdf8,color:#f1f5f9
-    style C fill:#1e293b,stroke:#38bdf8,color:#f1f5f9
-    style D fill:#1e293b,stroke:#38bdf8,color:#f1f5f9
-    style E fill:#1e293b,stroke:#38bdf8,color:#f1f5f9
-    style F fill:#1e293b,stroke:#22c55e,color:#f1f5f9
-```
-
-### Frontend Component Hierarchy
+### Frontend Architecture (Mindcase UI)
 
 ```mermaid
 graph TD
-    Root["main.tsx<br/>StrictMode + ErrorBoundary + QueryClientProvider + AuthProvider"]
-    Root --> App["App.tsx<br/>AppRouter + Toaster"]
-    App --> Router["AppRouter<br/>BrowserRouter + Routes"]
+    Root["main.tsx<br/>ErrorBoundary + QueryClientProvider + AuthProvider + Theme"]
+    Root --> Router["routes/ AppRouter (lazy pages)"]
 
-    Router --> Public["PublicRoute Guard"]
-    Router --> Protected["ProtectedRoute Guard"]
-    Router --> Landing["LandingPage /"]
+    Router --> Landing["/ Landing"]
+    Router --> Public["PublicRoute"]
+    Router --> Protected["ProtectedRoute → AppShell<br/>(Sidebar · TopBar · HelpOverlay · global hotkeys)"]
 
-    Public --> Login["LoginPage /login"]
-    Public --> Register["RegisterPage /register"]
+    Public --> Login["/login"]
+    Public --> Register["/register"]
 
-    Protected --> DL["DashboardLayout"]
-    DL --> Dashboard["DashboardPage /dashboard"]
-    DL --> Projects["ProjectsPage /projects"]
-    DL --> CreateProject["CreateProjectPage /projects/new"]
-    DL --> ProjectDetail["ProjectDetailPage /projects/:id"]
-    DL --> GAPairs["GAPairsPage /projects/:id/ga-pairs"]
-    DL --> Questions["QuestionsPage /projects/:id/questions"]
-    DL --> DatasetReview["DatasetReviewPage /projects/:id/dataset-review"]
-    DL --> Providers["ProvidersPage /providers"]
+    Protected --> Dashboard["/dashboard"]
+    Protected --> Projects["/projects"]
+    Protected --> Create["/projects/new"]
+    Protected --> Providers["/providers"]
+    Protected --> PL["/projects/:projectId → ProjectLayout<br/>(pipeline stepper + Next button)"]
+
+    PL --> Overview["index · Overview"]
+    PL --> Docs["documents"]
+    PL --> Chunks["chunks"]
+    PL --> GA["ga-pairs"]
+    PL --> Q["questions"]
+    PL --> Rev["dataset-review"]
+    PL --> Exp["export"]
 ```
+
+- **Pipeline stepper**: `useProjectPipeline` derives each step's state from project counts; the Next button moves to the next unlocked step.
+- **Shortcuts**: `useGlobalHotkeys` + `HelpOverlay` (press `?`).
+- **Long tasks**: `TaskProgress` polls `GET /tasks/{id}` and shows elapsed time.
+- **Data layer**: one `api/*.ts` module and one `hooks/use*.ts` hook per domain, optimistic updates with undo where safe.
 
 ---
 
@@ -452,126 +525,64 @@ graph TD
 
 ```
 quick-dataset/
-│
-├── backend/                          # FastAPI application
+├── backend/                              # FastAPI application
 │   ├── app/
-│   │   ├── main.py                   # App entry: CORS, router registration, health check
-│   │   ├── models.py                 # SQLAlchemy ORM — 15 tables, enums, SoftDeleteMixin
-│   │   ├── schemas.py                # Pydantic v2 — auth, projects, generation config, tasks
-│   │   ├── schemas_extended.py       # Pydantic v2 — docs, chunks, GA, questions, answers, exports, prompts
-│   │   │
-│   │   ├── api/                      # Route handlers (one file per domain)
-│   │   │   ├── deps.py               # Shared dependencies: get_db, get_current_user
-│   │   │   ├── auth.py               # POST register, login, refresh; GET /me
-│   │   │   ├── providers.py          # LLM key CRUD + test connection
-│   │   │   ├── projects.py           # Project CRUD + pipeline_progress
-│   │   │   ├── documents.py          # Upload + background parsing + MD5 dedup
-│   │   │   ├── chunks.py             # Generate, preview, CRUD, inline edit
-│   │   │   ├── ga_pairs.py           # Generate + manual create, CRUD
-│   │   │   ├── questions.py          # Generate, estimate, bulk ops, search/filters
-│   │   │   ├── dataset_items.py      # Generate answers, estimate, bulk confirm/delete
-│   │   │   ├── exports.py            # Create, list, download, delete (4 formats)
-│   │   │   ├── prompts.py            # Get, upsert, version history, render, test
-│   │   │   ├── search.py             # Cross-entity global search (GIN + ILIKE)
-│   │   │   └── tasks.py              # GET /tasks/{id} — universal progress polling
-│   │   │
-│   │   ├── core/                     # Framework-level infrastructure
-│   │   │   ├── config.py             # pydantic-settings: DATABASE_URL, JWT, CORS, encryption
-│   │   │   ├── database.py           # SQLAlchemy engine + SessionLocal factory
-│   │   │   ├── security.py           # bcrypt hashing, JWT encode/decode (access + refresh)
-│   │   │   ├── crypto.py             # Fernet encrypt/decrypt for API keys
-│   │   │   ├── pricing.py            # Model pricing registry (40+ models), cost estimation
-│   │   │   └── exceptions.py         # AppException + standard error factories
-│   │   │
-│   │   ├── repositories/            # Data access layer — all soft-delete-aware
-│   │   │   ├── user_repository.py
-│   │   │   ├── llm_key_repository.py
-│   │   │   ├── project_repository.py
-│   │   │   ├── document_repository.py
-│   │   │   ├── chunk_repository.py
-│   │   │   ├── ga_pair_repository.py
-│   │   │   ├── question_repository.py
-│   │   │   └── task_repository.py
-│   │   │
-│   │   └── services/                 # Business logic
-│   │       ├── parsing/              # File parsers (PDF, DOCX, MD, TXT) → markdown text
-│   │       ├── chunking/             # Recursive, markdown-aware, token-based splitters
-│   │       ├── generation/           # GA, question, answer generators + resolver + estimator
-│   │       ├── llm/                  # Provider clients, tracked_complete, provider_factory
-│   │       ├── prompts/              # Prompt versioning + template rendering
-│   │       └── usage/                # Token counting + cost estimation
-│   │
-│   ├── alembic/                      # Database migrations
-│   ├── storage/                      # Local file storage (uploads + exports)
-│   ├── requirements.txt              # Python dependencies
-│   ├── alembic.ini                   # Alembic configuration
-│   ├── .env.example                  # Backend env template
-│   └── .env                          # Local config (git-ignored)
-│
-├── frontend/                         # React + TypeScript application
-│   ├── src/
-│   │   ├── main.tsx                  # Entry: StrictMode + ErrorBoundary + QueryClient + AuthProvider
-│   │   ├── App.tsx                   # AppRouter + Toaster
-│   │   │
-│   │   ├── api/                      # API client layer
-│   │   │   ├── client.ts             # Axios instance: interceptors, token refresh queue, error normalization
-│   │   │   ├── auth.ts               # Auth API: register, login, me, refresh, logout
-│   │   │   ├── projects.ts           # Projects API
-│   │   │   ├── providers.ts          # LLM keys API
-│   │   │   ├── documents.ts          # Document upload API
-│   │   │   ├── chunks.ts             # Chunks API
-│   │   │   ├── ga_pairs.ts           # GA pairs API
-│   │   │   ├── questions.ts          # Questions API (generate, estimate, bulk, filters)
-│   │   │   ├── dataset_items.ts      # Dataset items API (generate, confirm, bulk)
-│   │   │   ├── exports.ts            # Export API
-│   │   │   ├── prompts.ts            # Prompt playground API
-│   │   │   ├── search.ts             # Global search API
-│   │   │   └── tasks.ts              # Task polling API
-│   │   │
-│   │   ├── components/
-│   │   │   ├── ui/                   # Design system (button, card, dialog, table, input, etc.)
-│   │   │   ├── common/               # Shared (DataTable, EmptyState, ErrorState, LoadingState, etc.)
-│   │   │   ├── forms/                # Form primitives with react-hook-form
-│   │   │   └── layout/               # DashboardLayout
-│   │   │
-│   │   ├── contexts/
-│   │   │   └── AuthContext.tsx        # Auth state: user, login, register, logout, isLoading
-│   │   │
-│   │   ├── features/                 # Feature modules (one per domain)
-│   │   │   ├── auth/                 # Login + Register pages
-│   │   │   ├── projects/             # Projects list, create, detail pages
-│   │   │   ├── documents/            # Document upload UI
-│   │   │   ├── chunks/               # Chunk generation + review
-│   │   │   ├── ga-pairs/             # GA pair management
-│   │   │   ├── questions/            # Question generation + bulk review
-│   │   │   ├── dataset-review/       # Answer review + confirmation
-│   │   │   └── providers/            # LLM API key management
-│   │   │
-│   │   ├── hooks/                    # Custom hooks (useAuth, useProjects, useQuestions, etc.)
-│   │   ├── layouts/                  # Page layout wrappers
-│   │   ├── pages/                    # Route-level pages (Dashboard, Landing, 404)
-│   │   ├── routes/                   # AppRouter, ProtectedRoute, PublicRoute
-│   │   ├── types/                    # Shared TypeScript types (api.ts)
-│   │   └── lib/                      # Utilities (config, token, utils, animations, toast)
-│   │
-│   ├── package.json
-│   ├── vite.config.ts
-│   ├── tailwind.config.js
-│   ├── tsconfig.json
+│   │   ├── main.py                       # App entry: CORS, router registration, /health
+│   │   ├── models.py                     # SQLAlchemy ORM — 15 tables, enums, SoftDeleteMixin
+│   │   ├── schemas.py                    # Pydantic v2 — auth, projects, generation config, tasks
+│   │   ├── schemas_extended.py           # Pydantic v2 — docs, chunks, GA, questions, answers, exports, prompts
+│   │   ├── api/                          # One router per domain (auth, providers, projects, documents,
+│   │   │                                 #   chunks, ga_pairs, questions, dataset_items, exports,
+│   │   │                                 #   prompts, search, tasks) + deps.py
+│   │   ├── core/                         # config, database, security (JWT/bcrypt), crypto (Fernet),
+│   │   │                                 #   pricing (model price registry), exceptions
+│   │   ├── repositories/                 # Soft-delete-aware data access (8 repositories)
+│   │   └── services/
+│   │       ├── parsing/                  # PDF, DOCX, MD, TXT → markdown (with PDF clean-up)
+│   │       ├── chunking/                 # LangChain recursive/token splitters, markdown splitter
+│   │       ├── generation/
+│   │       │   ├── planning.py           # Question counts per chunk, GA distribution
+│   │       │   ├── question_generator.py # Question runs
+│   │       │   ├── question_postprocess.py # Parse, clean, filter, dedupe questions
+│   │       │   ├── answer_generator.py   # Grounded answers, MCQ validation, CoT, judge
+│   │       │   ├── ga_generator.py       # GA pairs from a whole-document digest
+│   │       │   ├── context.py            # Token-aware truncation, section prefixes, digests, GA blocks
+│   │       │   ├── llm_runner.py         # Bounded concurrency + retries/backoff
+│   │       │   ├── json_utils.py         # Robust JSON extraction from LLM output
+│   │       │   ├── resolver.py           # Key/model resolution chain
+│   │       │   ├── estimator.py          # Token + cost estimates (no LLM calls)
+│   │       │   └── generation_run_service.py # Run lineage (model + prompt version)
+│   │       ├── quality/                  # grounding.py (local check), rejudge.py   [PR #6]
+│   │       ├── llm/                      # Provider clients, provider_factory, http_client,
+│   │       │                             #   model_catalog, tracked_call
+│   │       ├── prompts/                  # Default + custom prompts, append-only versions
+│   │       └── usage/                    # Usage + cost aggregation
+│   ├── alembic/                          # Migrations
+│   ├── tests/                            # pytest suite (planning, postprocess, generators, JSON, splitter, ...)
+│   ├── requirements.txt / requirements-dev.txt
 │   └── .env.example
 │
-├── docs/                             # Architecture documentation
-│   ├── prd.md                        # Product Requirements
-│   ├── trd.md                        # Technical Requirements
-│   ├── design.md                     # Design decisions + rationale
-│   ├── schema.md                     # Database schema (generated from models)
-│   ├── appflow.md                    # User journey / screen flow
-│   ├── implementation.md             # Step-by-step build plan
-│   ├── tracker.md                    # Build progress tracking
-│   └── rules.md                      # Architectural constraints
+├── frontend/                             # React 19 + TypeScript + Vite (Mindcase UI)
+│   ├── src/
+│   │   ├── main.tsx · App.tsx · ErrorBoundary.tsx
+│   │   ├── api/                          # Axios client + one module per domain
+│   │   ├── components/
+│   │   │   ├── ui/                       # Design system (button, card, dialog, table, kbd, window-frame, ...)
+│   │   │   ├── common/                   # EmptyState, ErrorState, TaskProgress, VirtualList, SelectionBar, ...
+│   │   │   └── layout/                   # AppShell, Sidebar, TopBar, HelpOverlay, useGlobalHotkeys, useProjectPipeline
+│   │   ├── contexts/AuthContext.tsx
+│   │   ├── features/                     # auth, projects (ProjectLayout), documents, chunks, ga-pairs,
+│   │   │                                 #   questions, dataset-review, export, providers
+│   │   ├── hooks/                        # useProjects, useQuestions, useDatasetItems, useHotkeys, ...
+│   │   ├── layouts/ · pages/             # Dashboard, Landing, NotFound
+│   │   ├── routes/                       # AppRouter, ProtectedRoute, PublicRoute
+│   │   ├── lib/                          # config, token, pipeline, tasks, theme, optimistic, undo, ...
+│   │   └── types/api.ts
+│   ├── package.json · vite.config.ts · tailwind.config.js
+│   └── .env.example
 │
 ├── .gitignore
-└── README.md                         # ← You are here
+└── README.md
 ```
 
 ---
@@ -702,6 +713,18 @@ pnpm preview    # Preview production build locally
 | `JWT_ALGORITHM` | ❌ | JWT algorithm (default: `HS256`) | `HS256` |
 | `ENCRYPTION_SECRET_KEY` | ✅ | Fernet key for API key encryption | Generate with `Fernet.generate_key()` |
 
+**Generation tuning (optional)**
+
+| Variable | Default | Description |
+|:---|:---:|:---|
+| `GENERATION_CONCURRENCY` | `8` | Parallel LLM calls per run (max 64; lower it on free tiers) |
+| `LLM_MAX_RETRIES` | `4` | Retries for transient errors (408, 5xx, ...) |
+| `LLM_MAX_RATE_LIMIT_RETRIES` | `10` | Retries for 429s (daily-quota 429s fail fast) |
+| `LLM_RETRY_BASE_DELAY` / `LLM_RETRY_MAX_DELAY` | `1.0` / `60` | Exponential backoff bounds in seconds |
+| `LLM_CALL_TIMEOUT` | `120` | Wall-clock timeout per LLM call (s) |
+| `LLM_HTTP_READ_TIMEOUT` | `120` | HTTP read timeout (s) |
+| `LLM_HTTP_MAX_CONNECTIONS` | `64` | Shared HTTP connection pool size |
+
 ### Frontend (`frontend/.env`)
 
 | Variable | Required | Description | Example |
@@ -796,8 +819,13 @@ alembic downgrade -1
 
 ### Testing
 
-> [!IMPORTANT]
-> **No automated test suite is currently implemented.** The `test_scripts/` directories in both `backend/` and `frontend/` contain ad-hoc test scripts for manual verification, not a formal test framework.
+```bash
+cd backend
+pip install -r requirements-dev.txt
+pytest -q
+```
+
+Tests use fake LLM clients (`tests/_gen_fakes.py`), so no API keys or network are needed.
 
 ---
 
@@ -850,6 +878,7 @@ All endpoints are prefixed with `/api/v1`. Interactive Swagger docs are availabl
 | `PATCH` | `/providers/{key_id}` | Update key name/value/default | ✅ |
 | `DELETE` | `/providers/{key_id}` | Delete API key | ✅ |
 | `POST` | `/providers/{key_id}/test` | Test connection to provider | ✅ |
+| `GET` | `/providers/{key_id}/models` | Live model list for the key's provider | ✅ |
 
 ### Projects
 
@@ -865,8 +894,9 @@ All endpoints are prefixed with `/api/v1`. Interactive Swagger docs are availabl
 
 | Method | Endpoint | Description | Auth |
 |:---:|:---|:---|:---:|
-| `POST` | `/projects/{id}/documents` | Upload files (multipart) | ✅ |
+| `POST` | `/projects/{id}/documents/upload` | Upload files (multipart) | ✅ |
 | `GET` | `/projects/{id}/documents` | List documents with status | ✅ |
+| `GET` | `/projects/{id}/documents/{doc_id}` | Get one document | ✅ |
 | `DELETE` | `/projects/{id}/documents/{doc_id}` | Soft-delete document | ✅ |
 
 ### Chunks
@@ -899,6 +929,8 @@ All endpoints are prefixed with `/api/v1`. Interactive Swagger docs are availabl
 | `GET` | `/projects/{id}/questions` | List with filters (status, chunk, GA pair, search) | ✅ |
 | `PATCH` | `/projects/{id}/questions/{q_id}` | Update question text | ✅ |
 | `POST` | `/projects/{id}/questions/bulk-delete` | Bulk delete (up to 500) | ✅ |
+| `POST` | `/projects/{id}/questions/bulk-update` | Bulk status/text update | ✅ |
+| `GET` | `/projects/{id}/questions/stats` | Question counts per document | ✅ |
 | `DELETE` | `/projects/{id}/questions/{q_id}` | Soft-delete question | ✅ |
 
 ### Dataset Items (Answers)
@@ -911,6 +943,7 @@ All endpoints are prefixed with `/api/v1`. Interactive Swagger docs are availabl
 | `PATCH` | `/projects/{id}/dataset-items/{item_id}` | Update payload/cot/confirmed | ✅ |
 | `POST` | `/projects/{id}/dataset-items/bulk-confirm` | Bulk confirm/unconfirm (up to 2000) | ✅ |
 | `POST` | `/projects/{id}/dataset-items/bulk-delete` | Bulk delete (up to 2000) | ✅ |
+| `POST` | `/projects/{id}/dataset-items/rejudge` | Re-score items with a judge, no regeneration *(PR #6)* | ✅ |
 
 ### Exports
 
@@ -928,8 +961,9 @@ All endpoints are prefixed with `/api/v1`. Interactive Swagger docs are availabl
 | `GET` | `/projects/{id}/prompts/{type}` | Get active prompt for type | ✅ |
 | `PUT` | `/projects/{id}/prompts/{type}` | Upsert prompt (creates new version) | ✅ |
 | `GET` | `/projects/{id}/prompts/{type}/versions` | List version history | ✅ |
-| `POST` | `/projects/{id}/prompts/render` | Render template (no LLM call) | ✅ |
-| `POST` | `/projects/{id}/prompts/test` | Test prompt with real LLM call | ✅ |
+| `GET` | `/projects/{id}/prompts/{type}/versions/{version}` | Get one version | ✅ |
+| `POST` | `/projects/{id}/prompts/{type}/render` | Render template (no LLM call) | ✅ |
+| `POST` | `/projects/{id}/prompts/{type}/test` | Test prompt with real LLM call | ✅ |
 
 ### Search & Tasks
 
@@ -937,6 +971,7 @@ All endpoints are prefixed with `/api/v1`. Interactive Swagger docs are availabl
 |:---:|:---|:---|:---:|
 | `GET` | `/projects/{id}/search?q=...` | Cross-entity search | ✅ |
 | `GET` | `/tasks/{task_id}` | Poll task progress | ✅ |
+| `POST` | `/tasks/{task_id}/cancel` | Request cancellation | ✅ |
 | `GET` | `/health` | Health check | ❌ |
 
 ### Response Patterns
@@ -1127,7 +1162,9 @@ erDiagram
 - **GIN indexes** — Full-text search on `chunks.content` and `questions.question` via `to_tsvector` for sub-linear search
 - **Connection pooling** — SQLAlchemy engine with `pool_pre_ping=True` for connection health checks
 - **Background tasks** — All generation operations run async via `BackgroundTasks`, returning 202 immediately
-- **LLM call timeout** — Hard 90-second wall-clock timeout on every provider call via `asyncio.wait_for`
+- **Concurrent LLM calls** — `LLMRunner` runs up to `GENERATION_CONCURRENCY` calls at once over a shared HTTP pool
+- **Rate-limit aware** — honours `Retry-After`/Groq reset headers, backs off exponentially, fails fast on daily quotas
+- **LLM call timeout** — `LLM_CALL_TIMEOUT` (default 120 s) wall-clock timeout on every provider call
 
 ### Frontend Optimizations
 - **Lazy loading** — All page components loaded via `React.lazy()` + `Suspense` for code splitting
@@ -1230,10 +1267,14 @@ The frontend is a standard **Vite/React static build** deployable to any static 
 
 ## 🧪 Testing
 
-> [!IMPORTANT]
-> **No automated test suite exists.** There is no test framework configured, no unit tests, and no integration tests. The `test_scripts/` directories in both `backend/` and `frontend/` contain ad-hoc manual verification scripts, not automated tests.
->
-> Adding a proper test suite (pytest for backend, Vitest for frontend) is on the future roadmap.
+The backend has a pytest suite in `backend/tests/` covering question planning, question post-processing, the question/answer/GA generators, JSON extraction, prompt rendering, the model picker and the splitter. LLM calls are faked, so the suite runs offline in seconds.
+
+| Branch | Result |
+|:---|:---|
+| `main` | 108 passed |
+| `main` + PR #3 + PR #6 | 120 passed |
+
+There is no frontend test suite yet; `pnpm build` (type-check + Vite build) is the gate.
 
 ---
 
@@ -1251,7 +1292,7 @@ These are **intentional v1 scope cuts** with documented upgrade paths, not bugs.
 | **No billing/subscriptions** | BYOK only — users pay LLM providers directly | Stripe integration |
 | **No i18n** | English-only UI | Internationalization framework |
 | **Local file storage** | Uploads/exports stored in `backend/storage/` | Cloudflare R2 with presigned URLs |
-| **No automated tests** | Manual verification only | pytest (backend) + Vitest (frontend) |
+| **No frontend tests** | Backend has pytest; frontend relies on the type-checked build | Vitest + Playwright |
 | **JWT in localStorage** | Vulnerable to XSS | `httpOnly` secure cookies |
 | **No rate limiting** | API endpoints are unthrottled | Express-rate-limit or FastAPI middleware |
 | **No email verification** | Registration doesn't verify email | Email confirmation flow |
@@ -1262,11 +1303,15 @@ These are **intentional v1 scope cuts** with documented upgrade paths, not bugs.
 
 ### 🟢 Near-Term (Post-MVP Polish)
 
-- [ ] **AI Evaluation** — Judge-model scoring with quality distribution histograms (`EvaluateRequest` schema exists)
+- [x] **AI Evaluation** — Judge-model scoring during answer generation, separate/backup judge, re-judge
+- [ ] **Auto-approve by score** — Confirm items above a threshold, review only borderline ones
+- [ ] **OpenAI messages export** — Chat fine-tuning format
 - [ ] **Multi-turn Conversations** — Generate dialogues with configurable roles and turns (`ConversationGenerateRequest` schema exists)
-- [ ] **Chain-of-Thought Synthesis** — Generate/optimize reasoning chains with before/after diffs (`CotSynthesizeRequest` schema exists)
+- [x] **Chain-of-Thought** — Kept from `<think>` or synthesized per answer
+- [ ] **CoT optimization** — Before/after diffs (`CotSynthesizeRequest` schema exists)
 - [ ] **Usage Dashboard** — Cost breakdown by provider, model, and task type (`UsageSummary` schema exists)
-- [ ] **Automated Test Suite** — pytest for backend, Vitest for frontend
+- [x] **Backend test suite** — pytest, offline
+- [ ] **Frontend tests** — Vitest + Playwright
 
 ### 🟡 Medium-Term (v2)
 
